@@ -1,0 +1,30 @@
+stages:
+  preprocess:
+    cmd: uv run python src/preprocess.py
+    deps:
+      - data/churn_data.csv
+      - src/preprocess.py
+    outs:
+      - data/processed/train.csv
+      - data/processed/test.csv
+    metrics:
+      - data/processed/stats.json:
+          cache: false
+
+  train:
+    cmd: uv run python src/train.py
+    deps:
+      - data/processed/train.csv
+      - src/train.py
+    outs:
+      - models/churn_model.pkl
+
+  evaluate:
+    cmd: uv run python src/evaluate.py
+    deps:
+      - data/processed/test.csv
+      - models/churn_model.pkl
+      - src/evaluate.py
+    metrics:
+      - metrics.json:
+          cache: false

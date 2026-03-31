@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Models
+models/
+
+# DVC cache
+/tmp/dvc*
+
+# IDE
+.idea/
+.vscode/
+
+# Claude Code local settings
+.claude/settings.json
