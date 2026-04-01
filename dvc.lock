@@ -9,8 +9,13 @@ stages:
       size: 977501
     - path: src/preprocess.py
       hash: md5
-      md5: 851604e834aa955a9b100a8b9757b681
-      size: 1479
+      md5: 1dd7de1c572aed66e41366094cd9a999
+      size: 1805
+    params:
+      configs/params.yaml:
+        preprocess:
+          test_size: 0.2
+          random_state: 42
     outs:
     - path: data/processed/stats.json
       hash: md5
@@ -33,8 +38,14 @@ stages:
       size: 708275
     - path: src/train.py
       hash: md5
-      md5: d3620c39c4af4609401ed3c186f6a515
-      size: 1640
+      md5: dad19cce6e346864546c50cd2c666928
+      size: 2859
+    params:
+      configs/params.yaml:
+        train:
+          n_estimators: 100
+          random_state: 42
+          model_type: RandomForestClassifier
     outs:
     - path: models/churn_model.pkl
       hash: md5
@@ -53,8 +64,13 @@ stages:
       size: 19485748
     - path: src/evaluate.py
       hash: md5
-      md5: 821eafa1cf03446eb78e2a24ca6c6078
-      size: 1094
+      md5: 24d4b736f8d7c09d32b30fee3a8e0a42
+      size: 4067
+    params:
+      configs/params.yaml:
+        evaluate:
+          primary_metric: auc_roc
+          auto_promote: true
     outs:
     - path: metrics.json
       hash: md5

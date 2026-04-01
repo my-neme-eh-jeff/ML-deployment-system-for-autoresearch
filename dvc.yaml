@@ -4,6 +4,9 @@ stages:
     deps:
       - data/churn_data.csv
       - src/preprocess.py
+    params:
+      - configs/params.yaml:
+          - preprocess
     outs:
       - data/processed/train.csv
       - data/processed/test.csv
@@ -16,6 +19,9 @@ stages:
     deps:
       - data/processed/train.csv
       - src/train.py
+    params:
+      - configs/params.yaml:
+          - train
     outs:
       - models/churn_model.pkl
 
@@ -25,6 +31,9 @@ stages:
       - data/processed/test.csv
       - models/churn_model.pkl
       - src/evaluate.py
+    params:
+      - configs/params.yaml:
+          - evaluate
     metrics:
       - metrics.json:
           cache: false

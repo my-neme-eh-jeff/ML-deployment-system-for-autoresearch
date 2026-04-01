@@ -1,4 +1,4 @@
 [core]
-    remote = local_remote
-['remote "local_remote"']
-    url = /tmp/dvc-remote
+    remote = gcs_remote
+['remote "gcs_remote"']
+    url = gs://customer-churn-dvc-remote/dvc-store

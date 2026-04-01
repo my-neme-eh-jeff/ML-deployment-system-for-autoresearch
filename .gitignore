@@ -9,6 +9,10 @@ models/
 # DVC cache
 /tmp/dvc*
 
+# MLflow
+mlruns/
+mlartifacts/
+
 # IDE
 .idea/
 .vscode/

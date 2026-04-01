@@ -4,17 +4,27 @@ import json
 from pathlib import Path
 
 import pandas as pd
+import yaml
 from sklearn.model_selection import train_test_split
 
 TARGET = "Churn"
 
 
+def load_params():
+    with open("configs/params.yaml") as f:
+        return yaml.safe_load(f)
+
+
 def preprocess(
     input_path: str = "data/churn_data.csv",
     output_dir: str = "data/processed",
-    test_size: float = 0.2,
-    seed: int = 42,
+    test_size: float | None = None,
+    seed: int | None = None,
 ):
+    if test_size is None or seed is None:
+        params = load_params()["preprocess"]
+        test_size = test_size or params["test_size"]
+        seed = seed or params["random_state"]
     df = pd.read_csv(input_path)
 
     # Clean TotalCharges (has some blank strings)
