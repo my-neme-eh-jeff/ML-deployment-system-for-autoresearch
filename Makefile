@@ -1,5 +1,5 @@
 .PHONY: repro train serve clean mlflow promote test lint compile-kfp \
-       kfp-ui argocd-ui argocd-password deploy-argocd k8s-status
+       argocd-ui argocd-password deploy-argocd k8s-status demo demo-stop
 
 # ── Local development ──────────────────────────────────────────────
 
@@ -41,10 +41,6 @@ docker-run:
 
 # ── Kubernetes (vind cluster) ──────────────────────────────────────
 
-kfp-ui:
-	@echo "KFP UI at http://localhost:8080"
-	kubectl port-forward -n kubeflow svc/ml-pipeline-ui 8080:80
-
 argocd-ui:
 	@echo "ArgoCD UI at http://localhost:8090"
 	kubectl port-forward -n argocd svc/argocd-server 8090:443
@@ -56,9 +52,25 @@ deploy-argocd:
 	kubectl apply -f argocd/application.yaml
 
 k8s-status:
-	@echo "── KFP pods ──"
-	@kubectl get pods -n kubeflow --no-headers 2>/dev/null || echo "  namespace not found"
 	@echo "── ArgoCD pods ──"
 	@kubectl get pods -n argocd --no-headers 2>/dev/null || echo "  namespace not found"
 	@echo "── Churn serving ──"
 	@kubectl get pods -n churn-serving --no-headers 2>/dev/null || echo "  namespace not found"
+
+demo:
+	@echo "Starting all services..."
+	@echo "  MLflow UI:    http://localhost:5000"
+	@echo "  ArgoCD UI:    https://localhost:8090  (admin / $$(kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d))"
+	@echo "  Churn API:    http://localhost:8001"
+	@echo ""
+	@uv run mlflow ui --port 5000 &
+	@kubectl port-forward -n argocd svc/argocd-server 8090:443 &
+	@kubectl port-forward -n churn-serving svc/churn-api 8001:80 &
+	@echo "All services running. Use 'make demo-stop' to stop."
+	@wait
+
+demo-stop:
+	@echo "Stopping demo services..."
+	@-pkill -f "mlflow ui" 2>/dev/null
+	@-pkill -f "kubectl port-forward" 2>/dev/null
+	@echo "Done."
