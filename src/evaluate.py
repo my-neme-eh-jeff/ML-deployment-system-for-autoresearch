@@ -34,6 +34,7 @@ def evaluate(
     test_path: str = "data/processed/test.csv",
     model_path: str = "models/churn_model.pkl",
     metrics_path: str = "metrics.json",
+    run_id_path: str = "models/run_id.txt",
     auto_promote: bool = True,
 ):
     df = pd.read_csv(test_path)
@@ -57,25 +58,19 @@ def evaluate(
     # Write metrics file for DVC
     Path(metrics_path).write_text(json.dumps(metrics, indent=2))
 
-    # Log metrics to the most recent MLflow run
-    mlflow.set_experiment("churn-prediction")
-    last_run = mlflow.search_runs(
-        experiment_names=["churn-prediction"],
-        order_by=["start_time DESC"],
-        max_results=1,
-    )
-
-    if last_run.empty:
-        print("No MLflow run found — skipping MLflow logging.")
-        return
-
-    run_id = last_run.iloc[0]["run_id"]
-
-    with mlflow.start_run(run_id=run_id):
-        mlflow.log_metrics(metrics)
-
     for k, v in metrics.items():
         print(f"{k}: {v}")
+
+    # Log metrics back to the exact run that produced this model
+    mlflow.set_experiment("churn-prediction")
+    run_id_file = Path(run_id_path)
+    if not run_id_file.exists():
+        print(f"run_id file not found at {run_id_path} — skipping MLflow logging.")
+        return
+
+    run_id = run_id_file.read_text().strip()
+    with mlflow.start_run(run_id=run_id):
+        mlflow.log_metrics(metrics)
 
     # Champion/challenger promotion
     client = mlflow.MlflowClient()
@@ -84,7 +79,13 @@ def evaluate(
         print("No registered model versions found.")
         return
 
-    new_version = max(latest_versions, key=lambda v: int(v.version))
+    # Find the version registered in this specific run
+    run_versions = [v for v in latest_versions if v.run_id == run_id]
+    if not run_versions:
+        print(f"No model version found for run_id {run_id}.")
+        return
+    new_version = run_versions[0]
+
     champion_metric = get_champion_metric()
 
     if champion_metric is None:

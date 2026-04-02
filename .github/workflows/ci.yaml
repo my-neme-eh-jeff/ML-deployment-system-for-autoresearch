@@ -35,8 +35,9 @@ jobs:
     needs: lint-and-test
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     permissions:
-      contents: read
-      id-token: write
+      contents: write   # to push deployment.yaml image tag update back to main
+      packages: write   # to push image to ghcr.io
+      id-token: write   # for GCP Workload Identity Federation
     steps:
       - uses: actions/checkout@v4
 
@@ -58,14 +59,47 @@ jobs:
       - name: Pull data from DVC
         run: uv run dvc pull
 
+      - name: Start ephemeral MLflow tracking server
+        run: |
+          uv run mlflow server \
+            --backend-store-uri=sqlite:///mlflow_ci.db \
+            --artifacts-destination=./mlflow_artifacts \
+            --serve-artifacts \
+            --port 5000 &
+          sleep 8
+
       - name: Run DVC pipeline
         run: uv run dvc repro
+        env:
+          MLFLOW_TRACKING_URI: http://localhost:5000
 
       - name: Push updated artifacts to GCS
         run: uv run dvc push
 
-      - name: Build Docker image
-        run: docker build -t churn-api:${{ github.sha }} .
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        run: |
+          docker build \
+            -t ghcr.io/${{ github.repository_owner }}/churn-api:${{ github.sha }} \
+            -t ghcr.io/${{ github.repository_owner }}/churn-api:latest \
+            .
+          docker push ghcr.io/${{ github.repository_owner }}/churn-api:${{ github.sha }}
+          docker push ghcr.io/${{ github.repository_owner }}/churn-api:latest
+
+      - name: Update deployment image tag and push
+        run: |
+          sed -i "s|image: ghcr.io/.*/churn-api:.*|image: ghcr.io/${{ github.repository_owner }}/churn-api:${{ github.sha }}|" k8s/deployment.yaml
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add k8s/deployment.yaml
+          git commit -m "ci: update churn-api image to ${{ github.sha }} [skip ci]"
+          git push
 
   compile-kfp:
     runs-on: ubuntu-latest

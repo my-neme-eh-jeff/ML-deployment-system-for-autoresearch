@@ -21,81 +21,117 @@ End-to-end MLOps project for customer churn prediction. The ML model is intentio
 | scikit-learn | 1.8+ | Model training (RandomForest + sklearn Pipeline) |
 | FastAPI | 0.135+ | Inference API server |
 | vind (vcluster) | 0.31+ | Local Kubernetes cluster (**never use kind**) |
-| ArgoCD | - | GitOps deployment (watches k8s/ directory) |
+| ArgoCD | v3.3.6 | GitOps deployment (watches k8s/ directory) |
 | ruff | 0.15+ | Linting + formatting |
 | pytest | 9.0+ | Testing |
 
 ## Commands
 
 ```bash
-make repro          # Run full DVC pipeline (preprocess → train → evaluate)
+make repro          # Run full DVC pipeline against cluster MLflow (requires make mlflow port-forward running)
 make train          # Train model only
-make test           # Run pytest suite (10 tests)
+make test           # Run pytest suite
 make lint           # ruff check + format check
-make serve          # Start FastAPI on localhost:8000
-make mlflow         # MLflow UI on localhost:5000
+make serve          # Start FastAPI locally (against cluster MLflow port-forward)
+make mlflow         # Port-forward cluster MLflow to localhost:5000
 make promote        # Manually promote challenger → champion
 make compile-kfp    # Compile Kubeflow Pipeline to YAML
-make clean          # Remove generated artifacts
-make docker-build   # Build inference container
-make docker-run     # Run inference container
+make clean          # Remove generated artifacts (data/processed, models, metrics.json)
+make docker-build   # Build inference container (tags as ghcr.io/my-neme-eh-jeff/churn-api:latest)
+make docker-push    # Push to ghcr.io
+make docker-run     # Run inference container locally
+make deploy-mlflow  # Apply k8s/mlflow.yaml to cluster (one-time setup)
+make deploy-argocd  # Apply argocd/application.yaml
+make argocd-ui      # Print ArgoCD LoadBalancer IP
+make k8s-status     # Show pod status across all namespaces
+make demo           # Port-forward MLflow + churn-api, print ArgoCD IP
+make demo-stop      # Kill all port-forwards
 ```
 
-## Architecture
+## Architecture (what's actually running)
+
+### Deployed services on vind cluster
+
+| Namespace | Service | Access |
+|-----------|---------|--------|
+| `mlflow` | MLflow tracking server | `localhost:5000` via port-forward (`make mlflow`) |
+| `churn-serving` | churn-api (2 pods) | `localhost:8001` via port-forward |
+| `argocd` | ArgoCD | `http://192.168.148.253` (LoadBalancer, no port-forward needed) |
+
+ArgoCD credentials: `admin` / `Y6p9-krPfkEhm4Sd`
 
 ### DVC pipeline (local development)
 ```
-data/churn_data.csv → preprocess → train.csv/test.csv → train → churn_model.pkl → evaluate → metrics.json
+data/churn_data.csv → preprocess → train.csv/test.csv → train → churn_model.pkl + run_id.txt → evaluate → metrics.json
 ```
-Each stage declared in `dvc.yaml` with deps/outs. DVC tracks hashes in `dvc.lock` and only re-runs changed stages.
+- Run with `make repro` (sets `MLFLOW_TRACKING_URI=http://localhost:5000` automatically)
+- MLflow port-forward must be running first (`make mlflow` in separate terminal)
+- Each stage declared in `dvc.yaml` with deps/outs. DVC tracks hashes in `dvc.lock`
 
-### MLflow model registry
+### MLflow model registry (on cluster)
+- Deployed as `k8s/mlflow.yaml` — Deployment + ClusterIP Service + PVC
+- Uses `--serve-artifacts` so pods download models via HTTP (no direct storage access)
+- Uses `--workers=1` and 2Gi memory limit (MLflow 3.x needs this — multiple workers crash)
+- `train.py` writes `models/run_id.txt` after training so `evaluate.py` logs to the exact run
+- `evaluate.py` reads `run_id.txt` — no race-condition "most recent run" search
 - Every `train` run registers a new model version under `churn-model`
-- `evaluate` compares new model AUC-ROC against current "champion" alias
-- If better → auto-promoted to "champion"; if worse → tagged as "challenger" only
-- `src/promote.py` for manual promotion
-- Champion model is what gets deployed by ArgoCD
+- `evaluate` compares new model AUC-ROC against current `@champion` alias
+- If better → auto-promoted to `@champion`; if worse → tagged `@challenger` only
+- `src/promote.py` for manual promotion (`make promote`)
 
-### Kubeflow Pipelines (K8s orchestration)
-- Same pipeline logic as DVC but containerized — each stage is a pod
-- Defined in `pipelines/churn_pipeline.py`, compiles to `pipelines/churn_pipeline.yaml`
-- Uses `@dsl.component` decorators with `base_image=python:3.12-slim`
-- Reads raw data from GCS, logs to MLflow, handles champion/challenger
+### API serving (churn-api)
+- Loads champion model at startup via `mlflow.sklearn.load_model("models:/churn-model@champion")`
+- `MLFLOW_TRACKING_URI=http://mlflow.mlflow.svc.cluster.local:5000` set in k8s/deployment.yaml
+- `imagePullPolicy: Always` — always pulls from `ghcr.io/my-neme-eh-jeff/churn-api`
+- Returns 503 from `/health` if model not loaded (pod won't receive traffic until ready)
+- Image is public on ghcr.io — no pull secret needed
+
+### ArgoCD (GitOps)
+- Watches `k8s/` directory on `main` branch of `github.com/my-neme-eh-jeff/customer_churn_CICD`
+- Auto-sync enabled — every push to `k8s/` triggers a redeploy
+- Running in `--insecure` mode (HTTP on port 8080) for stable local access
+- Exposed as LoadBalancer service (192.168.148.253) — **do not use port-forward for ArgoCD**, it drops connections
+- **Important**: `argocd-server` deployment has been patched with `args: ["argocd-server", "--insecure"]`
+
+### CI/CD (GitHub Actions)
+- `lint-and-test`: Runs on every push/PR — ruff + pytest
+- `pipeline` (main only): dvc pull → starts ephemeral MLflow → dvc repro → dvc push → docker build → push to ghcr.io → update `k8s/deployment.yaml` image tag → git commit `[skip ci]` → push → ArgoCD auto-deploys
+- `compile-kfp`: Compiles Kubeflow pipeline YAML, uploads as artifact
+- Permissions: `contents: write`, `packages: write`, `id-token: write`
 
 ### Data storage
 - Raw dataset: Kaggle Telco Customer Churn (7,043 rows, 19 features)
 - DVC remote: `gs://customer-churn-dvc-remote/dvc-store` (GCS)
-- DVC pointer files (`.dvc`) are in git; actual data is in GCS
-- MLflow artifacts stored locally in `mlruns/` (gitignored)
-
-### CI/CD (GitHub Actions)
-- **lint-and-test**: Runs on every push/PR — ruff + pytest
-- **pipeline**: Main branch only — dvc pull → dvc repro → dvc push → docker build (needs `GCP_SA_KEY` secret)
-- **compile-kfp**: Compiles Kubeflow pipeline, uploads as artifact
+- MLflow artifacts: stored in cluster PVC at `/mlflow/artifacts/`, served via `--serve-artifacts`
 
 ## File layout
 
 ```
 src/
   preprocess.py     — Stage 1: clean TotalCharges, encode target, 80/20 split
-  train.py          — Stage 2: fit RandomForest, log to MLflow, register model
-  evaluate.py       — Stage 3: score model, log metrics, champion/challenger promotion
+  train.py          — Stage 2: fit RandomForest, log to MLflow, register model, write run_id.txt
+  evaluate.py       — Stage 3: score model, read run_id.txt, log metrics, champion/challenger
   promote.py        — Manual champion promotion script
-  api.py            — FastAPI inference server (/predict, /health)
+  api.py            — FastAPI inference server — loads @champion from MLflow registry at startup
 pipelines/
   churn_pipeline.py — Kubeflow Pipelines version of the same DAG
   churn_pipeline.yaml — Compiled KFP pipeline (generated)
 tests/
   conftest.py       — Fixtures: sample_raw_data, sample_processed_data
-  test_preprocess.py — 5 tests: splits, encoding, blank handling, stats
-  test_train.py     — 3 tests: pipeline structure, model save, MLflow registry
-  test_evaluate.py  — 2 tests: metrics file, champion promotion
+  test_preprocess.py — 5 tests
+  test_train.py     — 3 tests
+  test_evaluate.py  — 2 tests
 data/
   churn_data.csv.dvc — DVC pointer to raw dataset
   processed/         — Generated train.csv, test.csv, stats.json
-models/              — Generated churn_model.pkl (DVC-tracked)
-k8s/                 — Kubernetes manifests (ArgoCD target) [TODO]
-argocd/              — ArgoCD application config [TODO]
+models/              — Generated churn_model.pkl + run_id.txt (both DVC-tracked)
+k8s/
+  mlflow.yaml        — MLflow Deployment + Service + PVC (namespace: mlflow)
+  deployment.yaml    — churn-api Deployment (namespace: churn-serving)
+  service.yaml       — churn-api LoadBalancer Service
+  namespace.yaml     — churn-serving namespace
+argocd/
+  application.yaml   — ArgoCD Application watching k8s/ on main branch
 ```
 
 ## Current model metrics (baseline)
@@ -108,41 +144,53 @@ argocd/              — ArgoCD application config [TODO]
 | Precision | 0.6117 |
 | Recall | 0.4759 |
 
-Champion: `churn-model` v1
+Champion: `churn-model` v1 (alias `@champion` in cluster MLflow)
 
 ## What's done vs TODO
 
 ### Done
-- [x] DVC pipeline (preprocess → train → evaluate)
+- [x] DVC pipeline (preprocess → train → evaluate) with run_id.txt linking
 - [x] DVC remote on GCS (`gs://customer-churn-dvc-remote`)
-- [x] MLflow experiment tracking + model registry (champion/challenger)
+- [x] MLflow on cluster (k8s/mlflow.yaml) with --serve-artifacts + PVC
+- [x] MLflow experiment tracking + model registry (champion/challenger) via aliases
 - [x] Kubeflow Pipelines definition (compiles to YAML)
-- [x] GitHub Actions CI/CD (lint, test, pipeline, kfp compile)
+- [x] GitHub Actions CI/CD: lint, test, dvc repro, docker push to ghcr.io, deployment.yaml update
 - [x] Tests (10 passing)
-- [x] FastAPI inference server
-- [x] Dockerfile
+- [x] FastAPI inference server loading @champion from MLflow registry (not from disk)
+- [x] Dockerfile: Python 3.12, uv sync --frozen, no model baked in
+- [x] ArgoCD: deployed, LoadBalancer, --insecure mode, auto-sync watching k8s/
+- [x] churn-api: imagePullPolicy Always, loads from cluster MLflow
+- [x] End-to-end loop verified: make repro → MLflow champion → ghcr.io push → ArgoCD deploy → pod loads model → /predict works
 - [x] Pre-commit hooks (ruff)
 - [x] vind cluster running (`churn-cluster`)
 
 ### TODO
-- [ ] Install KFP standalone on vind cluster and run the pipeline
-- [ ] ArgoCD setup on vind — watch k8s/ dir, deploy champion model
-- [ ] K8s manifests for model serving
+- [ ] KFP standalone on vind cluster — install and run the pipeline on Kubernetes
 - [ ] Data validation (Pandera or Great Expectations) — as a DVC stage
 - [ ] Run scaling/transform experiments (log transform vs StandardScaler vs nothing for tree models)
+- [ ] Phase 2 API improvements: model version in /predict response, deeper health check (run dummy prediction)
 - [ ] Local end-to-end demo run + video recording
+- [ ] Set up Karpathy's auto research
 
 ### Explicitly out of scope
-- Evidently AI / data drift monitoring / auto-retraining (too complex for now)
+- Evidently AI / data drift monitoring / auto-retraining
 - Model serving benchmarking (TTFT etc.) — handled in separate `autoscaler` project
 - Internet-facing serving — local demo only
 
 ## Key decisions and context
 
-- **StandardScaler on numeric features**: Currently applied but is a no-op for RandomForest. Kept for pipeline correctness if model type changes. User aware — planned as an experiment (log transform vs StandardScaler vs nothing).
-- **MLflow v3 model registry uses aliases** (champion/challenger), not the old stages (Staging/Production). Aliases are the modern approach.
-- **DVC + Kubeflow Pipelines coexist**: DVC for local dev + data versioning, KFP for K8s orchestration. They're complementary, not competing.
-- **protobuf**: mlflow 3.10 + dvc-gs + kfp all coexist on protobuf 6.x. Was a pain to resolve.
+- **MLflow on cluster uses --workers=1 and 2Gi memory**: MLflow 3.x with multiple gunicorn workers crashes in constrained environments. Single worker is stable. This is a demo trade-off.
+- **MLflow --serve-artifacts**: Server proxies all artifact uploads/downloads via HTTP. Clients (local training via port-forward, pods via ClusterIP) don't need direct GCS/filesystem access — everything goes through the MLflow HTTP API.
+- **ArgoCD runs --insecure (HTTP)**: TLS + gRPC-web over kubectl port-forward is unreliable (drops connections). Running on HTTP port 8080 is stable. Exposed via LoadBalancer (no port-forward). This is standard for local dev.
+- **ArgoCD patched via args, not command**: The container entrypoint is `tini --`, so `command` would override tini. Use `args: ["argocd-server", "--insecure"]` instead.
+- **api.py loads from MLflow registry, not disk**: `mlflow.sklearn.load_model("models:/churn-model@champion")` — champion alias is the single source of truth. No model baked into image.
+- **run_id.txt links train and evaluate**: evaluate.py reads `models/run_id.txt` written by train.py. This avoids the race condition of searching for "most recent run".
+- **CI uses ephemeral MLflow**: GitHub Actions starts a local MLflow server for the pipeline run. The cluster MLflow is for production/demo only.
+- **imagePullPolicy: Always + ghcr.io**: Image must be public on ghcr.io (set in GitHub Packages settings). No image pull secret configured.
+- **StandardScaler on numeric features**: No-op for RandomForest. Kept for pipeline correctness if model type changes.
+- **MLflow v3 model registry uses aliases** (champion/challenger), not the old stages (Staging/Production).
+- **DVC + Kubeflow Pipelines coexist**: DVC for local dev + data versioning, KFP for K8s orchestration.
+- **protobuf**: mlflow 3.10 + dvc-gs + kfp all coexist on protobuf 6.x.
 - **pandas pinned to <3**: MLflow 3.10 requires pandas <3.
 
 ## Git and tooling preferences
@@ -153,9 +201,21 @@ Champion: `churn-model` v1
 - **SSH remote**: `git@github-personal:my-neme-eh-jeff/customer_churn_CICD.git` (custom SSH alias for the `my-neme-eh-jeff` GitHub account)
 - **Use real datasets** from Kaggle/research, not synthetic generated ones
 - **GCS for storage** — user has `gcloud` CLI logged in with `aman2003raj0@gmail.com` (personal) and `aman.nambisan@atlan.com` (work, used by ADC). The Atlan account has `storage.objectAdmin` on the DVC bucket.
+- **GitHub accounts**: `Aman-Nambisan` (personal, logged in via gh CLI) and `my-neme-eh-jeff` (portfolio account, used for this project). ghcr.io image is under `my-neme-eh-jeff`.
+
+## Known infra quirks
+
+- **vind cluster EOFs**: The vind cluster API server occasionally returns EOF/connection reset under load. Wait 10-15s and retry — it recovers on its own.
+- **kubectl port-forward + ArgoCD**: Never use port-forward for ArgoCD. Use the LoadBalancer IP (192.168.148.253) directly. Port-forward over TLS/gRPC drops connections.
+- **MLflow startup**: MLflow 3.x takes ~30s to become ready. readinessProbe has `failureThreshold: 10`. If pod is restarting, check memory — needs 2Gi limit.
+- **make demo**: Port-forwards MLflow (5000) and churn-api (8001). ArgoCD is accessed via LoadBalancer directly — no port-forward in demo.
+- **ghcr.io package visibility**: Must be set to Public in GitHub Packages settings. Do this via web UI — the REST API returns 404 for visibility changes on user packages.
 
 ## Next session goals
 
-1. Run the whole thing locally end-to-end (DVC pipeline + MLflow UI + KFP on vind)
-2. Set up Karpathy's auto research
-3. User will ask questions about the code after exploring it
+1. KFP on vind — install KFP standalone and submit a pipeline run
+2. Data validation stage (Pandera) in the DVC pipeline
+3. Phase 2 API improvements (model version in response, deeper health check)
+4. Scaling/transform experiments (log transform vs StandardScaler vs nothing)
+5. Set up Karpathy's auto research
+6. Video recording of end-to-end demo

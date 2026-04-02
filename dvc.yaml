@@ -24,12 +24,14 @@ stages:
           - train
     outs:
       - models/churn_model.pkl
+      - models/run_id.txt
 
   evaluate:
     cmd: uv run python src/evaluate.py
     deps:
       - data/processed/test.csv
       - models/churn_model.pkl
+      - models/run_id.txt
       - src/evaluate.py
     params:
       - configs/params.yaml:

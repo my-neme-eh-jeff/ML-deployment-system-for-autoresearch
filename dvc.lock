@@ -38,8 +38,8 @@ stages:
       size: 708275
     - path: src/train.py
       hash: md5
-      md5: dad19cce6e346864546c50cd2c666928
-      size: 2859
+      md5: 24a854b3b7fdf3319e6a4e273ef013e9
+      size: 3031
     params:
       configs/params.yaml:
         train:
@@ -51,6 +51,10 @@ stages:
       hash: md5
       md5: d0b8133f339324d78a09e0d7b50af7a4
       size: 19485748
+    - path: models/run_id.txt
+      hash: md5
+      md5: 978879f939d477247656beb656858c54
+      size: 32
   evaluate:
     cmd: uv run python src/evaluate.py
     deps:
@@ -62,10 +66,14 @@ stages:
       hash: md5
       md5: d0b8133f339324d78a09e0d7b50af7a4
       size: 19485748
+    - path: models/run_id.txt
+      hash: md5
+      md5: 978879f939d477247656beb656858c54
+      size: 32
     - path: src/evaluate.py
       hash: md5
-      md5: 24d4b736f8d7c09d32b30fee3a8e0a42
-      size: 4067
+      md5: c5df7b483a07fa91ccfbb84c9613c385
+      size: 4241
     params:
       configs/params.yaml:
         evaluate:

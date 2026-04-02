@@ -95,6 +95,10 @@ def train(
         with open(model_path, "wb") as f:
             pickle.dump(pipeline, f)
 
+        # Persist run_id so evaluate.py uses exactly this run
+        run_id_path = Path(model_path).parent / "run_id.txt"
+        run_id_path.write_text(run.info.run_id)
+
         # Log model to MLflow and register it
         mlflow.sklearn.log_model(
             pipeline,

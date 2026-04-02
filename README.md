@@ -15,52 +15,98 @@ This project answers all of those by building two parallel pipeline paths (local
 
 ## Architecture
 
+### End-to-end flow
+
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        Development (Local)                          │
-│                                                                     │
-│   data/churn_data.csv ──► preprocess ──► train ──► evaluate         │
-│          │                   (DVC pipeline - dvc repro)       │     │
-│          │                                                    │     │
-│     DVC-tracked                                               │     │
-│     (gs://...)                                                ▼     │
-│                                                         metrics.json│
-└─────────────────────┬───────────────────────────────────────────────┘
-                      │
-                      │  git push
-                      ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                      GitHub Actions CI/CD                           │
-│                                                                     │
-│   lint (ruff) ──► test (pytest) ──► dvc repro ──► docker build      │
-│                                        │                            │
-│                                        ▼                            │
-│                                   compile KFP                       │
-│                                   pipeline.yaml                     │
-└─────────────────────┬───────────────────────────────────────────────┘
-                      │
-                      ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                    Kubernetes (vind cluster)                         │
-│                                                                     │
-│   ┌──────────┐    ┌──────────────────┐    ┌──────────┐             │
-│   │ Kubeflow │    │  MLflow Model    │    │  ArgoCD  │             │
-│   │ Pipelines│───►│  Registry        │◄───│  (GitOps)│             │
-│   │          │    │                  │    │          │             │
-│   │ preprocess│   │  v1 ── champion ─┼───►│ deploy   │             │
-│   │ train    │    │  v2 ── challenger│    │ champion │             │
-│   │ evaluate │    │  v3 ── (none)   │    │ model    │             │
-│   └──────────┘    └──────────────────┘    └──────────┘             │
-└─────────────────────────────────────────────────────────────────────┘
-                      │
-                      ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                        Storage Layer                                │
-│                                                                     │
-│   Google Cloud Storage (gs://customer-churn-dvc-remote)             │
-│   ├── dvc-store/     ← datasets and model artifacts (DVC-managed)  │
-│   └── raw/           ← raw CSV for Kubeflow pipeline input         │
-└─────────────────────────────────────────────────────────────────────┘
+ ┌─────────────────────────────────────────────────────────────────────────┐
+ │                       Local Development                                 │
+ │                                                                         │
+ │   make repro  (MLFLOW_TRACKING_URI=http://localhost:5000)               │
+ │       │                                                                 │
+ │       ▼                                                                 │
+ │   DVC pipeline:  preprocess ──► train ──► evaluate                     │
+ │                                  │              │                       │
+ │                          writes run_id.txt   champion/challenger        │
+ │                          to models/          decision via AUC-ROC       │
+ │                                              comparison                 │
+ │                                                  │                      │
+ │              logs runs + registers model ────────┘                      │
+ │              via port-forward (localhost:5000)                          │
+ └──────────────────────────────┬──────────────────────────────────────────┘
+                                │  git push
+                                ▼
+ ┌─────────────────────────────────────────────────────────────────────────┐
+ │                      GitHub Actions CI/CD                               │
+ │                                                                         │
+ │   lint (ruff) ──► test (pytest)                                         │
+ │         │                                                               │
+ │         ▼  (main branch only)                                           │
+ │   dvc pull (GCS) ──► dvc repro ──► dvc push (GCS)                      │
+ │                          │                                              │
+ │                    ephemeral MLflow                                     │
+ │                    server in CI                                         │
+ │                          │                                              │
+ │                          ▼                                              │
+ │   docker build ──► push ghcr.io/my-neme-eh-jeff/churn-api:SHA          │
+ │                          │                                              │
+ │                   update k8s/deployment.yaml image tag                  │
+ │                   git commit [skip ci] ──► git push                     │
+ └──────────────────────────────┬──────────────────────────────────────────┘
+                                │  k8s/deployment.yaml changed
+                                ▼
+ ┌─────────────────────────────────────────────────────────────────────────┐
+ │                    vind cluster (local Kubernetes)                      │
+ │                                                                         │
+ │  ┌─────────────────────────────────────────────────────────────────┐   │
+ │  │  argocd namespace                                                │   │
+ │  │  ArgoCD (LoadBalancer: 192.168.148.253, --insecure HTTP)         │   │
+ │  │    └── watches github.com/my-neme-eh-jeff/.../k8s/ on main      │   │
+ │  │    └── auto-syncs on every git push → deploys churn-api         │   │
+ │  └───────────────────────────────┬─────────────────────────────────┘   │
+ │                                  │ deploys                              │
+ │                                  ▼                                      │
+ │  ┌────────────────────┐    ┌─────────────────────────────────────────┐ │
+ │  │  mlflow namespace  │    │  churn-serving namespace                │ │
+ │  │                    │    │                                         │ │
+ │  │  MLflow server     │◄───│  churn-api (2 pods)                     │ │
+ │  │  ├── SQLite DB     │    │  image: ghcr.io/.../churn-api:SHA       │ │
+ │  │  ├── artifacts/    │    │  imagePullPolicy: Always                │ │
+ │  │  └── --serve-      │    │                                         │ │
+ │  │      artifacts     │    │  on startup:                            │ │
+ │  │                    │    │  mlflow.sklearn.load_model(             │ │
+ │  │  v1 ── @champion ──┼────┤    "models:/churn-model@champion")      │ │
+ │  │  v2                │    │                                         │ │
+ │  │  v3 ── @challenger │    │  POST /predict → {"churn": 1,           │ │
+ │  └────────────────────┘    │               "churn_probability": 0.6} │ │
+ │      port-forward          └─────────────────────────────────────────┘ │
+ │      localhost:5000                                                     │
+ └─────────────────────────────────────────────────────────────────────────┘
+                                │
+                                ▼
+ ┌─────────────────────────────────────────────────────────────────────────┐
+ │                        Storage Layer                                    │
+ │                                                                         │
+ │   Google Cloud Storage (gs://customer-churn-dvc-remote)                │
+ │   └── dvc-store/   ← datasets + model pkl (DVC-managed)               │
+ └─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Champion/challenger promotion
+
+```
+  make repro
+      │
+      ▼
+  New model version registered in MLflow
+      │
+      ▼
+  Compare AUC-ROC vs current @champion
+      │
+      ├── Better?  → set @champion alias → git push → ArgoCD deploys
+      │                                  → new pods load updated champion
+      │
+      └── Worse?   → set @challenger alias only → prod unchanged
+                     (manual: make promote)
 ```
 
 ## Model Registry and Promotion Flow
