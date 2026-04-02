@@ -1,0 +1,92 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --dev
+
+      - name: Lint with ruff
+        run: uv run ruff check src/ tests/ pipelines/
+
+      - name: Format check
+        run: uv run ruff format --check src/ tests/ pipelines/
+
+      - name: Run tests
+        run: uv run pytest tests/ -v
+
+  pipeline:
+    runs-on: ubuntu-latest
+    needs: lint-and-test
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Authenticate to GCS (Workload Identity Federation)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/399695368426/locations/global/workloadIdentityPools/github-pool/providers/github-provider
+          service_account: churn-cicd@project-8018ed81-1dfe-470e-aad.iam.gserviceaccount.com
+
+      - name: Pull data from DVC
+        run: uv run dvc pull
+
+      - name: Run DVC pipeline
+        run: uv run dvc repro
+
+      - name: Push updated artifacts to GCS
+        run: uv run dvc push
+
+      - name: Build Docker image
+        run: docker build -t churn-api:${{ github.sha }} .
+
+  compile-kfp:
+    runs-on: ubuntu-latest
+    needs: lint-and-test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Compile Kubeflow Pipeline
+        run: uv run python pipelines/churn_pipeline.py
+
+      - name: Upload pipeline artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kfp-pipeline
+          path: pipelines/churn_pipeline.yaml

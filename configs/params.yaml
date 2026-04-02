@@ -1,0 +1,12 @@
+preprocess:
+  test_size: 0.2
+  random_state: 42
+
+train:
+  n_estimators: 100
+  random_state: 42
+  model_type: RandomForestClassifier
+
+evaluate:
+  primary_metric: auc_roc
+  auto_promote: true
