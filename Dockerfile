@@ -10,4 +10,5 @@ RUN uv sync --no-dev --frozen
 COPY src/api.py src/api.py
 
 EXPOSE 8000
-CMD ["uv", "run", "uvicorn", "src.api:app", "--host", "0.0.0.0", "--port", "8000"]
+ENV PYTHONUNBUFFERED=1
+CMD ["/app/.venv/bin/uvicorn", "src.api:app", "--host", "0.0.0.0", "--port", "8000"]
