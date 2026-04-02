@@ -71,13 +71,15 @@ data/churn_data.csv → preprocess → train.csv/test.csv → train → churn_mo
 ### MLflow model registry (on cluster)
 - Deployed as `k8s/mlflow.yaml` — Deployment + ClusterIP Service + PVC
 - Uses `--serve-artifacts` so pods download models via HTTP (no direct storage access)
-- Uses `--workers=1` and 2Gi memory limit (MLflow 3.x needs this — multiple workers crash)
+- Uses **uvicorn** (not gunicorn) + 2Gi memory limit. MLflow 3.x requires uvicorn for security middleware (`--allowed-hosts`). Don't add `--gunicorn-opts` — it's incompatible with `--allowed-hosts`.
+- Uses `--allowed-hosts=*` to allow requests from pods using the cluster DNS name (`mlflow.mlflow.svc.cluster.local`). Without this, MLflow 3.x's DNS rebinding protection returns 403.
 - `train.py` writes `models/run_id.txt` after training so `evaluate.py` logs to the exact run
 - `evaluate.py` reads `run_id.txt` — no race-condition "most recent run" search
 - Every `train` run registers a new model version under `churn-model`
 - `evaluate` compares new model AUC-ROC against current `@champion` alias
 - If better → auto-promoted to `@champion`; if worse → tagged `@challenger` only
 - `src/promote.py` for manual promotion (`make promote`)
+- **IMPORTANT**: The cluster MLflow is the source of truth. If the MLflow PVC data is lost (pod restart can wipe it if the DB wasn't populated yet), re-run `make repro` to re-register the model.
 
 ### API serving (churn-api)
 - Loads champion model at startup via `mlflow.sklearn.load_model("models:/churn-model@champion")`
@@ -85,6 +87,9 @@ data/churn_data.csv → preprocess → train.csv/test.csv → train → churn_mo
 - `imagePullPolicy: Always` — always pulls from `ghcr.io/my-neme-eh-jeff/churn-api`
 - Returns 503 from `/health` if model not loaded (pod won't receive traffic until ready)
 - Image is public on ghcr.io — no pull secret needed
+- **Dockerfile CMD**: uses `/app/.venv/bin/uvicorn` directly (NOT `uv run uvicorn`). `uv run` re-syncs the entire venv at every container start — 15-20s overhead + filesystem contention that causes the Python process to hang in D-state on Docker overlay filesystems.
+- **Probe delays**: readiness `initialDelaySeconds: 60`, liveness `initialDelaySeconds: 120`. FastAPI startup events (`load_model`) run BEFORE uvicorn binds to the port. Model download over the cluster network adds latency — generous delays prevent premature kills.
+- **Memory**: 2Gi limit. MLflow client + scikit-learn model in memory needs headroom.
 
 ### ArgoCD (GitOps)
 - Watches `k8s/` directory on `main` branch of `github.com/my-neme-eh-jeff/customer_churn_CICD`
@@ -144,7 +149,7 @@ argocd/
 | Precision | 0.6117 |
 | Recall | 0.4759 |
 
-Champion: `churn-model` v1 (alias `@champion` in cluster MLflow)
+Champion: `churn-model` v1 (alias `@champion` in cluster MLflow, re-bootstrapped 2026-04-02)
 
 ## What's done vs TODO
 
@@ -179,7 +184,7 @@ Champion: `churn-model` v1 (alias `@champion` in cluster MLflow)
 
 ## Key decisions and context
 
-- **MLflow on cluster uses --workers=1 and 2Gi memory**: MLflow 3.x with multiple gunicorn workers crashes in constrained environments. Single worker is stable. This is a demo trade-off.
+- **MLflow uses uvicorn + --allowed-hosts=* + 2Gi memory**: MLflow 3.x security middleware (`--allowed-hosts`) only works with uvicorn. Without `--allowed-hosts=*`, pods connecting via `mlflow.mlflow.svc.cluster.local` get a 403 (DNS rebinding false positive). Uvicorn defaults to 1 worker, which is stable in constrained environments. `--gunicorn-opts=--workers=1` was removed because it's incompatible with `--allowed-hosts`.
 - **MLflow --serve-artifacts**: Server proxies all artifact uploads/downloads via HTTP. Clients (local training via port-forward, pods via ClusterIP) don't need direct GCS/filesystem access — everything goes through the MLflow HTTP API.
 - **ArgoCD runs --insecure (HTTP)**: TLS + gRPC-web over kubectl port-forward is unreliable (drops connections). Running on HTTP port 8080 is stable. Exposed via LoadBalancer (no port-forward). This is standard for local dev.
 - **ArgoCD patched via args, not command**: The container entrypoint is `tini --`, so `command` would override tini. Use `args: ["argocd-server", "--insecure"]` instead.
@@ -207,9 +212,14 @@ Champion: `churn-model` v1 (alias `@champion` in cluster MLflow)
 
 - **vind cluster EOFs**: The vind cluster API server occasionally returns EOF/connection reset under load. Wait 10-15s and retry — it recovers on its own.
 - **kubectl port-forward + ArgoCD**: Never use port-forward for ArgoCD. Use the LoadBalancer IP (192.168.148.253) directly. Port-forward over TLS/gRPC drops connections.
-- **MLflow startup**: MLflow 3.x takes ~30s to become ready. readinessProbe has `failureThreshold: 10`. If pod is restarting, check memory — needs 2Gi limit.
+- **MLflow startup**: MLflow 3.x takes ~30-60s to become ready. readinessProbe has `failureThreshold: 10`. If pod is restarting, check memory — needs 2Gi limit.
 - **make demo**: Port-forwards MLflow (5000) and churn-api (8001). ArgoCD is accessed via LoadBalancer directly — no port-forward in demo.
 - **ghcr.io package visibility**: Must be set to Public in GitHub Packages settings. Do this via web UI — the REST API returns 404 for visibility changes on user packages.
+- **Local `mlflow ui` shadows port-forward**: If `mlflow ui` or any process is already on port 5000, `kubectl port-forward` silently fails and `make repro` writes to local disk instead of the cluster. Always run `make mlflow-kill` before `make mlflow` to ensure the port is free. Check with `lsof -i :5000`.
+- **MLflow PVC data is NOT auto-bootstrapped**: A fresh cluster or MLflow restart starts with an empty DB. After any MLflow redeploy, run `make repro` to re-register the model and set `@champion`. churn-api will return 503 until `@champion` exists.
+- **ArgoCD fights manual kubectl apply**: ArgoCD auto-syncs every ~3 minutes. Any `kubectl apply` to k8s/ resources will be reverted unless the change is also committed to git. Always commit + push first, then optionally apply manually to skip the wait.
+- **MLflow 3.x --allowed-hosts + --gunicorn-opts are mutually exclusive**: Security middleware only works with uvicorn. If you add `--allowed-hosts`, remove `--gunicorn-opts` (uvicorn is the default and uses 1 worker by default).
+- **churn-api permission denied in ArgoCD UI**: Intermittent — happens when argocd-repo-server restarts. Refresh the page; it resolves on its own.
 
 ## Next session goals
 

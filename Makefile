@@ -1,9 +1,10 @@
-.PHONY: repro train serve clean mlflow promote test lint compile-kfp \
-       argocd-ui argocd-password deploy-argocd deploy-mlflow k8s-status demo demo-stop
+.PHONY: repro train serve clean mlflow mlflow-kill promote test lint compile-kfp \
+       argocd-ui argocd-password deploy-argocd deploy-mlflow k8s-status bootstrap demo demo-stop
 
 # ── Local development ──────────────────────────────────────────────
 
-# Requires cluster MLflow to be running (make deploy-mlflow) and port-forwarded (make mlflow)
+# Requires cluster MLflow to be running (make deploy-mlflow) and port-forwarded (make mlflow).
+# If port-forward silently fails (another process owns :5000), use 'make mlflow-kill' first.
 repro:
 	MLFLOW_TRACKING_URI=http://localhost:5000 uv run dvc repro
 
@@ -13,9 +14,19 @@ train:
 serve:
 	MLFLOW_TRACKING_URI=http://localhost:5000 uv run uvicorn src.api:app --reload --port 8000
 
-# Port-forward the cluster MLflow to localhost:5000
+# Kill any process on port 5000 (e.g. a stray 'mlflow ui') then port-forward the cluster MLflow.
+# WARNING: if another app is using :5000 legitimately, this will kill it.
+mlflow-kill:
+	@echo "Killing any process on port 5000..."
+	@-lsof -ti :5000 | xargs kill -9 2>/dev/null || true
+	@-pkill -f "kubectl port-forward -n mlflow" 2>/dev/null || true
+	@echo "Port 5000 is now free."
+
+# Port-forward the cluster MLflow to localhost:5000.
+# Run 'make mlflow-kill' first if something else is already on :5000.
 mlflow:
 	@echo "MLflow UI at http://localhost:5000 (cluster)"
+	@echo "Tip: if this silently fails, run 'make mlflow-kill' first."
 	kubectl port-forward -n mlflow svc/mlflow 5000:5000
 
 promote:
@@ -33,6 +44,18 @@ compile-kfp:
 
 clean:
 	rm -rf data/processed models metrics.json
+
+# ── Cluster bootstrap (first-time or after MLflow PVC data loss) ───
+# Run this after 'make deploy-mlflow' to populate the model registry.
+# Prerequisite: 'make mlflow' port-forward must be running in another terminal.
+bootstrap:
+	@echo "Step 1/2: Training model and registering in cluster MLflow..."
+	MLFLOW_TRACKING_URI=http://localhost:5000 uv run python src/train.py
+	@echo "Step 2/2: Evaluating and setting @champion alias..."
+	MLFLOW_TRACKING_URI=http://localhost:5000 uv run python src/evaluate.py
+	@echo ""
+	@echo "Bootstrap complete. churn-api pods will load @champion on next restart."
+	@echo "Run 'kubectl rollout restart deployment/churn-api -n churn-serving' to trigger now."
 
 # ── Docker ─────────────────────────────────────────────────────────
 

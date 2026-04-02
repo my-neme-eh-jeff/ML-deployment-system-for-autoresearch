@@ -215,19 +215,43 @@ uv sync
 uv run dvc pull
 
 # Run the full pipeline
+# NOTE: 'make mlflow' port-forward must be running in a separate terminal first
 make repro
 
 # View experiment runs in MLflow
-make mlflow
+make mlflow-kill   # kill anything already on :5000 (e.g. stray 'mlflow ui')
+make mlflow        # port-forward cluster MLflow → localhost:5000
 # Open localhost:5000
 
 # Run tests
 make test
 
-# Start the inference API
+# Start the inference API (locally, against cluster MLflow port-forward)
 make serve
 # POST localhost:8000/predict
 ```
+
+## Cluster Setup (first-time or after MLflow data loss)
+
+When you deploy MLflow for the first time, or after the MLflow PVC is wiped, the model registry is empty. `churn-api` pods will return 503 until you bootstrap it:
+
+```bash
+# 1. Deploy MLflow to the cluster (one-time)
+make deploy-mlflow
+
+# 2. In a separate terminal, keep the port-forward running:
+make mlflow-kill && make mlflow
+
+# 3. Bootstrap: train + register @champion in cluster MLflow
+make bootstrap
+
+# 4. Restart churn-api pods to load the new champion
+kubectl rollout restart deployment/churn-api -n churn-serving
+```
+
+### Gotcha: local `mlflow ui` shadows the port-forward
+
+If you ever run `mlflow ui` or `uv run mlflow ui` locally, it occupies port 5000. A subsequent `make mlflow` port-forward will silently fail — `make repro` will then write to your local `mlflow.db` instead of the cluster. Always use `make mlflow-kill` before `make mlflow` to be safe.
 
 ## Tools and Why
 
