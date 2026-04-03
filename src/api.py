@@ -2,6 +2,7 @@
 
 import logging
 import os
+import threading
 
 import mlflow.sklearn
 import pandas as pd
@@ -43,8 +44,7 @@ class CustomerInput(BaseModel):
     TotalCharges: float
 
 
-@app.on_event("startup")
-def load_model():
+def _load_model_in_background():
     global model
     try:
         logger.info(f"Loading champion model from {MLFLOW_TRACKING_URI} ...")
@@ -54,6 +54,14 @@ def load_model():
         logger.error(
             f"Failed to load model: {e}. /health will return 503 until resolved."
         )
+
+
+@app.on_event("startup")
+def load_model():
+    # Run in a background thread so uvicorn binds to the port immediately.
+    # Health returns 503 while loading (pod alive, not ready) → readiness probe
+    # fails gracefully instead of the liveness probe seeing connection refused.
+    threading.Thread(target=_load_model_in_background, daemon=True).start()
 
 
 @app.get("/health")
