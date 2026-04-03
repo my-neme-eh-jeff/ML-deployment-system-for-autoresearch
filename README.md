@@ -9,7 +9,7 @@ Learn the following items
 - How do you version your data so results are reproducible six months later?
 - How do you compare experiment runs and decide which model goes to production?
 - How do you move from "works on my laptop" to running on Kubernetes for ML?
-- How do you deploy a new model without downtime — and roll back if it's worse? _Follow up: How do you make your platform so strong that HITL can be completely removed with the help of autonomous agents iteratively improving your model usng auto-research_
+- How do you deploy a new model without downtime — and roll back if it's worse? _Follow up: How do you make your platform so strong that HITL can be completely removed with the help of autonomous agents iteratively improving your model using auto-research -> https://github.com/my-neme-eh-jeff/customer_churn_CICD/pull/1_
 
 This project answers all of those by building two parallel pipeline paths (local DVC and Kubernetes-native Kubeflow) that share the same MLflow model registry and GCS storage backend.
 
