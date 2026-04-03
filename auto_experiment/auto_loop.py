@@ -25,11 +25,20 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-import anthropic
-import mlflow
-import yaml
-
+# PROJECT_ROOT must be defined before any third-party imports so that
+# load_dotenv() can find .env before anthropic/mlflow read os.environ.
 PROJECT_ROOT = Path(__file__).parent.parent
+
+from dotenv import load_dotenv  # noqa: E402
+
+# Load .env from project root — no need to export vars manually.
+# Variables already set in the environment take precedence over .env values.
+load_dotenv(PROJECT_ROOT / ".env")
+
+import anthropic  # noqa: E402
+import mlflow  # noqa: E402
+import yaml  # noqa: E402
+
 EDITABLE_FILES = [
     "configs/params.yaml",
     "src/train.py",
