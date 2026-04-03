@@ -15,13 +15,13 @@ This project answers all of those by building two parallel pipeline paths (local
 
 ## Screenshots 
 
-<img width="3024" height="1720" alt="image" src="https://github.com/user-attachments/assets/8466e9ca-a601-4d24-8176-ce1fae7aa450" />
-
 <img width="3024" height="1736" alt="image" src="https://github.com/user-attachments/assets/0f8be2bb-ae70-498a-8d3a-dabf05ee45ce" />
+
+<img width="3024" height="1074" alt="image" src="https://github.com/user-attachments/assets/2932d38f-e976-4514-a728-b6c80c9d1d55" />
 
 <img width="1512" height="868" alt="Screenshot 2026-04-02 at 5 10 29 PM" src="https://github.com/user-attachments/assets/4c4780e4-4cf9-4c27-8ad1-547ead8aeae9" />
 
-<img width="3024" height="1074" alt="image" src="https://github.com/user-attachments/assets/2932d38f-e976-4514-a728-b6c80c9d1d55" />
+<img width="3024" height="1720" alt="image" src="https://github.com/user-attachments/assets/8466e9ca-a601-4d24-8176-ce1fae7aa450" />
 
 
 ## Architecture
