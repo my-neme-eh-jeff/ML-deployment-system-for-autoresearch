@@ -45,6 +45,20 @@ compile-kfp:
 clean:
 	rm -rf data/processed models metrics.json
 
+# ── Auto-experiment (AI-driven loop, autoresearch-style) ───────────
+# Prereqs:
+#   1. export ANTHROPIC_API_KEY=sk-ant-...
+#   2. Run 'make mlflow-kill && make mlflow' in a separate terminal
+
+# Dry run: show what Claude proposes, no pipeline execution
+auto-experiment-dry-run:
+	uv run python auto_experiment/auto_loop.py --n-experiments 1 --dry-run
+
+# Run the full loop: 20 experiments, up to 2 hours
+auto-experiment:
+	MLFLOW_TRACKING_URI=http://localhost:5000 \
+	uv run python auto_experiment/auto_loop.py --n-experiments 20 --hours 2.0
+
 # ── Cluster bootstrap (first-time or after MLflow PVC data loss) ───
 # Run this after 'make deploy-mlflow' to populate the model registry.
 # Prerequisite: 'make mlflow' port-forward must be running in another terminal.

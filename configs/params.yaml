@@ -3,10 +3,33 @@ preprocess:
   random_state: 42
 
 train:
-  n_estimators: 100
+  # Core estimator — Claude can swap this
+  model_type: RandomForestClassifier  # RandomForestClassifier | GradientBoostingClassifier | HistGradientBoostingClassifier | ExtraTreesClassifier
   random_state: 42
-  model_type: RandomForestClassifier
+
+  # RandomForest / ExtraTrees knobs
+  n_estimators: 100
+  max_depth: null           # null = unlimited
+  min_samples_split: 2
+  min_samples_leaf: 1
+  max_features: sqrt        # "sqrt", "log2", or float
+  class_weight: null        # null, "balanced", "balanced_subsample"
+  bootstrap: true
+
+  # GradientBoosting / HistGradientBoosting knobs (ignored for RF/ExtraTrees)
+  learning_rate: 0.1
+  subsample: 1.0
+
+  # Feature engineering flags — train.py reads these
+  use_log_transform: false      # log1p(MonthlyCharges) and log1p(TotalCharges)
+  add_charges_per_month: false  # new feature: TotalCharges / (tenure + 1)
 
 evaluate:
   primary_metric: auc_roc
   auto_promote: true
+
+# This section is read ONLY by auto_experiment/auto_loop.py.
+# It is NOT referenced in dvc.yaml, so it never invalidates DVC stages.
+auto_experiment:
+  baseline_auc: 0.8162
+  min_improvement: 0.001
