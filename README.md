@@ -4,12 +4,12 @@ An end-to-end MLOps project that takes a customer churn prediction model from ra
 
 ## Motivation
 
-Most ML tutorials stop at `model.fit()`. In production, that's maybe 10% of the work. The rest is:
+Learn the following items  
 
 - How do you version your data so results are reproducible six months later?
 - How do you compare experiment runs and decide which model goes to production?
-- How do you move from "works on my laptop" to running on Kubernetes?
-- How do you deploy a new model without downtime — and roll back if it's worse?
+- How do you move from "works on my laptop" to running on Kubernetes for ML?
+- How do you deploy a new model without downtime — and roll back if it's worse? _Follow up: How do you make your platform so strong that HITL can be completely removed with the help of autonomous agents iteratively improving your model usng auto-research_
 
 This project answers all of those by building two parallel pipeline paths (local DVC and Kubernetes-native Kubeflow) that share the same MLflow model registry and GCS storage backend.
 
