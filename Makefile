@@ -82,7 +82,8 @@ deploy-argocd:
 	kubectl apply -f argocd/application.yaml
 
 argocd-ui:
-	@echo "ArgoCD UI at http://$$(kubectl get svc argocd-server -n argocd -o jsonpath='{.status.loadBalancer.ingress[0].ip}')"
+	@echo "ArgoCD UI:  http://$$(kubectl get svc argocd-server -n argocd -o jsonpath='{.status.loadBalancer.ingress[0].ip}')"
+	@echo "Churn API:  http://$$(kubectl get svc churn-api -n churn-serving -o jsonpath='{.status.loadBalancer.ingress[0].ip}')/health"
 
 argocd-password:
 	@kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d; echo

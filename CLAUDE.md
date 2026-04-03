@@ -60,6 +60,8 @@ make demo-stop      # Kill all port-forwards
 
 ArgoCD credentials: `admin` / `Y6p9-krPfkEhm4Sd`
 
+> **Note:** LoadBalancer IPs are assigned by vind/OrbStack and can change after cluster restarts. Check current IPs with `kubectl get svc -n argocd argocd-server` and `kubectl get svc -n churn-serving churn-api`.
+
 ### DVC pipeline (local development)
 ```
 data/churn_data.csv → preprocess → train.csv/test.csv → train → churn_model.pkl + run_id.txt → evaluate → metrics.json
@@ -88,8 +90,10 @@ data/churn_data.csv → preprocess → train.csv/test.csv → train → churn_mo
 - Returns 503 from `/health` if model not loaded (pod won't receive traffic until ready)
 - Image is public on ghcr.io — no pull secret needed
 - **Dockerfile CMD**: uses `/app/.venv/bin/uvicorn` directly (NOT `uv run uvicorn`). `uv run` re-syncs the entire venv at every container start — 15-20s overhead + filesystem contention that causes the Python process to hang in D-state on Docker overlay filesystems.
-- **Probe delays**: readiness `initialDelaySeconds: 60`, liveness `initialDelaySeconds: 120`. FastAPI startup events (`load_model`) run BEFORE uvicorn binds to the port. Model download over the cluster network adds latency — generous delays prevent premature kills.
+- **Probe split**: liveness hits `/health/live` (always 200 = uvicorn is alive), readiness hits `/health` (503 until model loads). Do NOT use the same endpoint for both — the liveness probe will kill pods that are alive but still loading the model.
+- **Probe delays**: liveness `initialDelaySeconds: 30` (Python package imports from Docker overlay FS take ~20s in the cluster), readiness `initialDelaySeconds: 10` (checks frequently, pod just stays "not ready" until model loads, never killed).
 - **Memory**: 2Gi limit. MLflow client + scikit-learn model in memory needs headroom.
+- **churn-api has a LoadBalancer IP** (`192.168.148.253`, port 80) just like ArgoCD — no port-forward needed. Use it directly.
 
 ### ArgoCD (GitOps)
 - Watches `k8s/` directory on `main` branch of `github.com/my-neme-eh-jeff/customer_churn_CICD`
