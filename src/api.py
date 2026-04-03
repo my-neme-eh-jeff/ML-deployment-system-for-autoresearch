@@ -64,8 +64,15 @@ def load_model():
     threading.Thread(target=_load_model_in_background, daemon=True).start()
 
 
+@app.get("/health/live")
+def liveness():
+    """Liveness probe — is the process running? Always 200 if uvicorn is up."""
+    return {"status": "alive"}
+
+
 @app.get("/health")
 def health():
+    """Readiness probe — is the model loaded and ready for traffic?"""
     if model is None:
         return JSONResponse(
             status_code=503,
