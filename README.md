@@ -21,6 +21,9 @@ This project answers all of those by building two parallel pipeline paths (local
 
 <img width="1512" height="868" alt="Screenshot 2026-04-02 at 5 10 29 PM" src="https://github.com/user-attachments/assets/4c4780e4-4cf9-4c27-8ad1-547ead8aeae9" />
 
+<img width="3024" height="1074" alt="image" src="https://github.com/user-attachments/assets/2932d38f-e976-4514-a728-b6c80c9d1d55" />
+
+
 ## Architecture
 
 ### End-to-end flow
