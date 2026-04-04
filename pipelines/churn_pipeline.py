@@ -16,13 +16,11 @@ import argparse
 
 from kfp import compiler, dsl
 
-BASE_IMAGE = "python:3.12-slim"
+BASE_IMAGE = "ghcr.io/my-neme-eh-jeff/churn-kfp:latest"
 PACKAGES = ["pandas==2.3.3", "scikit-learn==1.8.0", "mlflow==3.10.1"]
 
 
-@dsl.component(
-    base_image=BASE_IMAGE, packages_to_install=["pandas==2.3.3", "gcsfs==2025.7.0"]
-)
+@dsl.component(base_image=BASE_IMAGE)
 def preprocess(
     raw_data_gcs_path: str,
     test_size: float,
@@ -62,10 +60,7 @@ def preprocess(
         json.dump(stats_data, f, indent=2)
 
 
-@dsl.component(
-    base_image=BASE_IMAGE,
-    packages_to_install=["pandas==2.3.3", "scikit-learn==1.8.0", "mlflow==3.10.1"],
-)
+@dsl.component(base_image=BASE_IMAGE)
 def train(
     train_csv: dsl.Input[dsl.Dataset],
     n_estimators: int,
@@ -144,10 +139,7 @@ def train(
         )
 
 
-@dsl.component(
-    base_image=BASE_IMAGE,
-    packages_to_install=["pandas==2.3.3", "scikit-learn==1.8.0", "mlflow==3.10.1"],
-)
+@dsl.component(base_image=BASE_IMAGE)
 def evaluate(
     test_csv: dsl.Input[dsl.Dataset],
     model_artifact: dsl.Input[dsl.Model],
@@ -234,24 +226,32 @@ def churn_pipeline(
     raw_data_gcs_path: str = "gs://customer-churn-dvc-remote/raw/churn_data.csv",
     test_size: float = 0.2,
     n_estimators: int = 100,
-    mlflow_tracking_uri: str = "http://mlflow.default.svc.cluster.local:5000",
+    mlflow_tracking_uri: str = "http://mlflow.mlflow.svc.cluster.local:5000",
 ):
+    # Set explicit small resource requests so steps fit on the 2-node cluster.
+    # GKE Autopilot defaults to 1 CPU + 4GB per pod if unset — too large for demo.
     preprocess_task = preprocess(
         raw_data_gcs_path=raw_data_gcs_path,
         test_size=test_size,
     )
+    preprocess_task.set_cpu_request("200m").set_memory_request("512Mi")
+    preprocess_task.set_cpu_limit("500m").set_memory_limit("1Gi")
 
     train_task = train(
         train_csv=preprocess_task.outputs["train_csv"],
         n_estimators=n_estimators,
         mlflow_tracking_uri=mlflow_tracking_uri,
     )
+    train_task.set_cpu_request("300m").set_memory_request("512Mi")
+    train_task.set_cpu_limit("1").set_memory_limit("2Gi")
 
-    evaluate(
+    evaluate_task = evaluate(
         test_csv=preprocess_task.outputs["test_csv"],
         model_artifact=train_task.outputs["model_artifact"],
         mlflow_tracking_uri=mlflow_tracking_uri,
     )
+    evaluate_task.set_cpu_request("200m").set_memory_request("512Mi")
+    evaluate_task.set_cpu_limit("500m").set_memory_limit("1Gi")
 
 
 if __name__ == "__main__":
@@ -264,6 +264,7 @@ if __name__ == "__main__":
 
     output_path = "pipelines/churn_pipeline.yaml"
     compiler.Compiler().compile(churn_pipeline, output_path)
+
     print(f"Pipeline compiled to {output_path}")
 
     if args.run:

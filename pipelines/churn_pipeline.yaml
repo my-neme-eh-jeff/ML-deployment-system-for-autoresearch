@@ -1,7 +1,7 @@
 # PIPELINE DEFINITION
 # Name: churn-prediction-pipeline
 # Inputs:
-#    mlflow_tracking_uri: str [Default: 'http://mlflow.default.svc.cluster.local:5000']
+#    mlflow_tracking_uri: str [Default: 'http://mlflow.mlflow.svc.cluster.local:5000']
 #    n_estimators: int [Default: 100.0]
 #    raw_data_gcs_path: str [Default: 'gs://customer-churn-dvc-remote/raw/churn_data.csv']
 #    test_size: float [Default: 0.2]
@@ -121,16 +121,27 @@ deploymentSpec:
           \ v: int(v.version))\n\n    try:\n        champion = client.get_model_version_by_alias(MODEL_NAME,\
           \ \"champion\")\n        champion_run = client.get_run(champion.run_id)\n\
           \        champion_auc = champion_run.data.metrics.get(\"auc_roc\", 0)\n\n\
-          \        if results[\"auc_roc\"] > champion_auc:\n            client.set_registered_model_alias(MODEL_NAME,\
-          \ \"champion\", new_version.version)\n            print(f\"New champion:\
-          \ v{new_version.version} (AUC: {results['auc_roc']} > {champion_auc})\"\
-          )\n        else:\n            client.set_registered_model_alias(MODEL_NAME,\
-          \ \"challenger\", new_version.version)\n            print(f\"Challenger\
-          \ only: v{new_version.version} (AUC: {results['auc_roc']} <= {champion_auc})\"\
-          )\n    except Exception:\n        client.set_registered_model_alias(MODEL_NAME,\
-          \ \"champion\", new_version.version)\n        print(f\"First model \u2014\
-          \ v{new_version.version} promoted to champion\")\n\n"
+          \        if results[\"auc_roc\"] > champion_auc:\n            client.set_registered_model_alias(\n\
+          \                MODEL_NAME, \"champion\", new_version.version\n       \
+          \     )\n            print(\n                f\"New champion: v{new_version.version}\
+          \ (AUC: {results['auc_roc']} > {champion_auc})\"\n            )\n      \
+          \  else:\n            client.set_registered_model_alias(\n             \
+          \   MODEL_NAME, \"challenger\", new_version.version\n            )\n   \
+          \         print(\n                f\"Challenger only: v{new_version.version}\
+          \ (AUC: {results['auc_roc']} <= {champion_auc})\"\n            )\n    except\
+          \ Exception:\n        client.set_registered_model_alias(MODEL_NAME, \"champion\"\
+          , new_version.version)\n        print(f\"First model \u2014 v{new_version.version}\
+          \ promoted to champion\")\n\n"
         image: python:3.12-slim
+        resources:
+          cpuLimit: 0.5
+          cpuRequest: 0.2
+          memoryLimit: 1.073741824
+          memoryRequest: 0.536870912
+          resourceCpuLimit: 500m
+          resourceCpuRequest: 200m
+          resourceMemoryLimit: 1Gi
+          resourceMemoryRequest: 512Mi
     exec-preprocess:
       container:
         args:
@@ -144,9 +155,9 @@ deploymentSpec:
         - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
           \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
           \ python3 -m pip install --quiet --no-warn-script-location 'pandas==2.3.3'\
-          \ 'gcsfs==2025.7.0'  &&  python3 -m pip install --quiet --no-warn-script-location\
-          \ 'kfp==2.16.0' '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"\
-          3.9\"' && \"$0\" \"$@\"\n"
+          \ 'scikit-learn==1.8.0' 'gcsfs==2025.7.0'  &&  python3 -m pip install --quiet\
+          \ --no-warn-script-location 'kfp==2.16.0' '--no-deps' 'typing-extensions>=3.7.4,<5;\
+          \ python_version<\"3.9\"' && \"$0\" \"$@\"\n"
         - sh
         - -ec
         - 'program_path=$(mktemp -d)
@@ -175,6 +186,15 @@ deploymentSpec:
           \        \"churn_rate\": float(df[TARGET].mean()),\n    }\n    with open(stats.path,\
           \ \"w\") as f:\n        json.dump(stats_data, f, indent=2)\n\n"
         image: python:3.12-slim
+        resources:
+          cpuLimit: 0.5
+          cpuRequest: 0.2
+          memoryLimit: 1.073741824
+          memoryRequest: 0.536870912
+          resourceCpuLimit: 500m
+          resourceCpuRequest: 200m
+          resourceMemoryLimit: 1Gi
+          resourceMemoryRequest: 512Mi
     exec-train:
       container:
         args:
@@ -210,26 +230,39 @@ deploymentSpec:
           \ RandomForestClassifier\n    from sklearn.pipeline import Pipeline\n  \
           \  from sklearn.preprocessing import OneHotEncoder, StandardScaler\n\n \
           \   NUMERIC_FEATURES = [\"SeniorCitizen\", \"tenure\", \"MonthlyCharges\"\
-          , \"TotalCharges\"]\n    CATEGORICAL_FEATURES = [\n        \"gender\", \"\
-          Partner\", \"Dependents\", \"PhoneService\", \"MultipleLines\",\n      \
-          \  \"InternetService\", \"OnlineSecurity\", \"OnlineBackup\", \"DeviceProtection\"\
-          ,\n        \"TechSupport\", \"StreamingTV\", \"StreamingMovies\", \"Contract\"\
-          ,\n        \"PaperlessBilling\", \"PaymentMethod\",\n    ]\n    TARGET =\
-          \ \"Churn\"\n\n    df = pd.read_csv(train_csv.path)\n    X = df.drop(columns=[TARGET])\n\
-          \    y = df[TARGET]\n\n    preprocessor = ColumnTransformer(\n        transformers=[\n\
-          \            (\"num\", StandardScaler(), NUMERIC_FEATURES),\n          \
-          \  (\"cat\", OneHotEncoder(handle_unknown=\"ignore\", sparse_output=False),\
-          \ CATEGORICAL_FEATURES),\n        ]\n    )\n    pipeline = Pipeline([\n\
-          \        (\"preprocessor\", preprocessor),\n        (\"classifier\", RandomForestClassifier(n_estimators=n_estimators,\
-          \ random_state=42)),\n    ])\n    pipeline.fit(X, y)\n\n    with open(model_artifact.path,\
-          \ \"wb\") as f:\n        pickle.dump(pipeline, f)\n\n    mlflow.set_tracking_uri(mlflow_tracking_uri)\n\
-          \    mlflow.set_experiment(\"churn-prediction-kfp\")\n\n    with mlflow.start_run(run_name=\"\
-          kfp-train\"):\n        mlflow.log_param(\"n_estimators\", n_estimators)\n\
-          \        mlflow.log_param(\"n_train_samples\", X.shape[0])\n        mlflow.log_param(\"\
-          orchestrator\", \"kubeflow-pipelines\")\n        mlflow.sklearn.log_model(\n\
-          \            pipeline, artifact_path=\"model\", registered_model_name=\"\
+          , \"TotalCharges\"]\n    CATEGORICAL_FEATURES = [\n        \"gender\",\n\
+          \        \"Partner\",\n        \"Dependents\",\n        \"PhoneService\"\
+          ,\n        \"MultipleLines\",\n        \"InternetService\",\n        \"\
+          OnlineSecurity\",\n        \"OnlineBackup\",\n        \"DeviceProtection\"\
+          ,\n        \"TechSupport\",\n        \"StreamingTV\",\n        \"StreamingMovies\"\
+          ,\n        \"Contract\",\n        \"PaperlessBilling\",\n        \"PaymentMethod\"\
+          ,\n    ]\n    TARGET = \"Churn\"\n\n    df = pd.read_csv(train_csv.path)\n\
+          \    X = df.drop(columns=[TARGET])\n    y = df[TARGET]\n\n    preprocessor\
+          \ = ColumnTransformer(\n        transformers=[\n            (\"num\", StandardScaler(),\
+          \ NUMERIC_FEATURES),\n            (\n                \"cat\",\n        \
+          \        OneHotEncoder(handle_unknown=\"ignore\", sparse_output=False),\n\
+          \                CATEGORICAL_FEATURES,\n            ),\n        ]\n    )\n\
+          \    pipeline = Pipeline(\n        [\n            (\"preprocessor\", preprocessor),\n\
+          \            (\n                \"classifier\",\n                RandomForestClassifier(n_estimators=n_estimators,\
+          \ random_state=42),\n            ),\n        ]\n    )\n    pipeline.fit(X,\
+          \ y)\n\n    with open(model_artifact.path, \"wb\") as f:\n        pickle.dump(pipeline,\
+          \ f)\n\n    mlflow.set_tracking_uri(mlflow_tracking_uri)\n    mlflow.set_experiment(\"\
+          churn-prediction-kfp\")\n\n    with mlflow.start_run(run_name=\"kfp-train\"\
+          ):\n        mlflow.log_param(\"n_estimators\", n_estimators)\n        mlflow.log_param(\"\
+          n_train_samples\", X.shape[0])\n        mlflow.log_param(\"orchestrator\"\
+          , \"kubeflow-pipelines\")\n        mlflow.sklearn.log_model(\n         \
+          \   pipeline,\n            artifact_path=\"model\",\n            registered_model_name=\"\
           churn-model\",\n        )\n\n"
         image: python:3.12-slim
+        resources:
+          cpuLimit: 1.0
+          cpuRequest: 0.3
+          memoryLimit: 2.147483648
+          memoryRequest: 0.536870912
+          resourceCpuLimit: '1'
+          resourceCpuRequest: 300m
+          resourceMemoryLimit: 2Gi
+          resourceMemoryRequest: 512Mi
 pipelineInfo:
   name: churn-prediction-pipeline
 root:
@@ -294,7 +327,7 @@ root:
   inputDefinitions:
     parameters:
       mlflow_tracking_uri:
-        defaultValue: http://mlflow.default.svc.cluster.local:5000
+        defaultValue: http://mlflow.mlflow.svc.cluster.local:5000
         isOptional: true
         parameterType: STRING
       n_estimators:
