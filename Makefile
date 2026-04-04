@@ -112,6 +112,9 @@ cluster-wake:
 	@kubectl scale deployment --all -n argocd --replicas=1 2>/dev/null || true
 	@kubectl scale statefulset --all -n argocd --replicas=1 2>/dev/null || true
 	@kubectl scale deployment --all -n kubeflow --replicas=1 2>/dev/null || true
+	@echo "Re-enabling ArgoCD auto-sync..."
+	@kubectl patch applications.argoproj.io churn-api -n argocd --type merge \
+		-p '{"spec":{"syncPolicy":{"automated":{"prune":true,"selfHeal":true}}}}' 2>/dev/null || true
 	@echo "Waiting for MLflow to be ready (~2 min)..."
 	@kubectl wait --for=condition=available --timeout=180s deployment/mlflow -n mlflow 2>/dev/null || true
 	@echo ""
