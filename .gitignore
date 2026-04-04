@@ -17,5 +17,8 @@ mlartifacts/
 .idea/
 .vscode/
 
+# Environment variables (secrets — never commit)
+.env
+
 # Claude Code local settings
 .claude/settings.json

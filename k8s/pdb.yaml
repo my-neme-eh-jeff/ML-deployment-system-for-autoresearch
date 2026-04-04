@@ -1,0 +1,24 @@
+# PodDisruptionBudgets ensure at least one pod stays running during
+# GKE node maintenance, cluster upgrades, or autoscaler drain events.
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: churn-api-pdb
+  namespace: churn-serving
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: churn-api
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: mlflow-pdb
+  namespace: mlflow
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: mlflow

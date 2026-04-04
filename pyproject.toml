@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Add your description here"
 requires-python = ">=3.12"
 dependencies = [
+    "anthropic>=0.88.0",
     "dvc>=3.67.0",
     "dvc-gs>=3.0.2",
     "fastapi>=0.135.2",
@@ -13,6 +14,7 @@ dependencies = [
     "numpy>=2.4.4",
     "pandas>=2.2,<3",
     "pydantic>=2.12.5",
+    "python-dotenv>=1.2.2",
     "pyyaml>=6.0.3",
     "scikit-learn>=1.8.0",
     "setuptools>=82.0.1",
