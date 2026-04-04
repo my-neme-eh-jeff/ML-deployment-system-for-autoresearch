@@ -85,6 +85,33 @@ docker-run:
 		-e MLFLOW_TRACKING_URI=http://host.docker.internal:5000 \
 		ghcr.io/my-neme-eh-jeff/churn-api:latest
 
+# ── GKE cluster ────────────────────────────────────────────────────
+
+gke-connect:
+	gcloud container clusters get-credentials mlops-cluster \
+		--region=asia-south1 \
+		--project=project-8018ed81-1dfe-470e-aad
+
+gke-status:
+	@echo "=== Nodes ==="
+	@kubectl get nodes
+	@echo "=== MLflow ===" && kubectl get pods -n mlflow --no-headers 2>/dev/null
+	@echo "=== KFP ===" && kubectl get pods -n kubeflow --no-headers 2>/dev/null | grep "ui\|pipeline" | head -5
+	@echo "=== ArgoCD ===" && kubectl get pods -n argocd --no-headers 2>/dev/null | grep Running | head -3
+	@echo "=== churn-serving ===" && kubectl get pods -n churn-serving --no-headers 2>/dev/null
+
+gke-urls:
+	@echo "MLflow UI:   http://$$(kubectl get svc mlflow -n mlflow -o jsonpath='{.status.loadBalancer.ingress[0].ip}'):5000"
+	@echo "ArgoCD UI:   http://$$(kubectl get svc argocd-server -n argocd -o jsonpath='{.status.loadBalancer.ingress[0].ip}')"
+	@echo "KFP UI:      http://$$(kubectl get svc ml-pipeline-ui -n kubeflow -o jsonpath='{.status.loadBalancer.ingress[0].ip}')"
+	@echo "Churn API:   http://$$(kubectl get svc churn-api -n churn-serving -o jsonpath='{.status.loadBalancer.ingress[0].ip}')/predict"
+
+kfp-run:
+	MLFLOW_TRACKING_URI=http://$$(kubectl get svc mlflow -n mlflow -o jsonpath='{.status.loadBalancer.ingress[0].ip}'):5000 \
+	uv run python pipelines/churn_pipeline.py \
+		--run \
+		--host http://$$(kubectl get svc ml-pipeline-ui -n kubeflow -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+
 # ── Kubernetes (vind cluster) ──────────────────────────────────────
 
 deploy-mlflow:

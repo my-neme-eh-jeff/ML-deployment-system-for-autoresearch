@@ -50,17 +50,43 @@ make demo-stop      # Kill all port-forwards
 
 ## Architecture (what's actually running)
 
-### Deployed services on vind cluster
+### GKE Deployment (production)
 
-| Namespace | Service | Access |
-|-----------|---------|--------|
-| `mlflow` | MLflow tracking server | `localhost:5000` via port-forward (`make mlflow`) |
-| `churn-serving` | churn-api (2 pods) | `localhost:8001` via port-forward |
-| `argocd` | ArgoCD | `http://192.168.148.253` (LoadBalancer, no port-forward needed) |
+**GCP Project:** `project-8018ed81-1dfe-470e-aad`  
+**Cluster:** `mlops-cluster` — GKE Autopilot, `asia-south1`
+
+| Namespace | Service | Public URL |
+|-----------|---------|-----------|
+| `mlflow` | MLflow 3.x (CloudSQL + GCS) | `http://34.180.20.197:5000` |
+| `argocd` | ArgoCD v3.x | `http://34.100.246.237` |
+| `kubeflow` | KFP UI | `http://34.93.2.209` |
+| `churn-serving` | churn-api (2 pods, HPA 2-10) | `http://34.180.37.1` |
 
 ArgoCD credentials: `admin` / `Y6p9-krPfkEhm4Sd`
 
-> **Note:** LoadBalancer IPs are assigned by vind/OrbStack and can change after cluster restarts. Check current IPs with `kubectl get svc -n argocd argocd-server` and `kubectl get svc -n churn-serving churn-api`.
+> **Note:** LoadBalancer IPs are stable on GKE (unlike the local vind setup). Run `make gke-status` to print live IPs.
+
+### GCP Infrastructure
+
+| Resource | Details |
+|----------|---------|
+| CloudSQL | `churn-mlflow` (PostgreSQL 15, db-f1-micro, asia-south1-c) |
+| GCS MLflow artifacts | `gs://churn-mlflow-artifacts-project-8018ed81` |
+| GCS DVC remote | `gs://customer-churn-dvc-remote` (pre-existing) |
+| Artifact Registry | `asia-south1-docker.pkg.dev/.../churn-repo` |
+| Workload Identity | `mlflow-sa`, `kfp-sa`, `github-cicd` bound to K8s SAs |
+
+### Local vind cluster (deprecated — kept for reference)
+
+The project started on a local vind (vCluster in Docker) cluster using SQLite MLflow on a PVC. Migrated to GKE to fix:
+- SQLite data loss on pod restart → CloudSQL PostgreSQL
+- Unstable LoadBalancer IPs → stable GKE IPs
+- KFP never running → KFP standalone deployed
+- Ephemeral MLflow in CI (fake champion promotion) → real GKE MLflow
+- ARM64-only images crashing on amd64 nodes → multi-arch (amd64+arm64)
+
+To connect kubectl to local vind: `vcluster connect churn-cluster`  
+To connect kubectl to GKE: `gcloud container clusters get-credentials mlops-cluster --region=asia-south1 --project=project-8018ed81-1dfe-470e-aad`
 
 ### DVC pipeline (local development)
 ```
@@ -70,18 +96,17 @@ data/churn_data.csv → preprocess → train.csv/test.csv → train → churn_mo
 - MLflow port-forward must be running first (`make mlflow` in separate terminal)
 - Each stage declared in `dvc.yaml` with deps/outs. DVC tracks hashes in `dvc.lock`
 
-### MLflow model registry (on cluster)
-- Deployed as `k8s/mlflow.yaml` — Deployment + ClusterIP Service + PVC
-- Uses `--serve-artifacts` so pods download models via HTTP (no direct storage access)
+### MLflow model registry (on GKE)
+- GKE: CloudSQL PostgreSQL backend + GCS artifact store + Cloud SQL Auth Proxy sidecar
+- Local: port-forward (`make mlflow-kill && make mlflow`) to access at `localhost:5000`
 - Uses **uvicorn** (not gunicorn) + 2Gi memory limit. MLflow 3.x requires uvicorn for security middleware (`--allowed-hosts`). Don't add `--gunicorn-opts` — it's incompatible with `--allowed-hosts`.
-- Uses `--allowed-hosts=*` to allow requests from pods using the cluster DNS name (`mlflow.mlflow.svc.cluster.local`). Without this, MLflow 3.x's DNS rebinding protection returns 403.
+- Uses `--allowed-hosts=*` to allow requests from pods via cluster DNS (`mlflow.mlflow.svc.cluster.local`). Without this, MLflow 3.x's DNS rebinding protection returns 403.
 - `train.py` writes `models/run_id.txt` after training so `evaluate.py` logs to the exact run
 - `evaluate.py` reads `run_id.txt` — no race-condition "most recent run" search
 - Every `train` run registers a new model version under `churn-model`
-- `evaluate` compares new model AUC-ROC against current `@champion` alias
-- If better → auto-promoted to `@champion`; if worse → tagged `@challenger` only
+- `evaluate` compares AUC-ROC against current `@champion` alias; better → auto-promotes
 - `src/promote.py` for manual promotion (`make promote`)
-- **IMPORTANT**: The cluster MLflow is the source of truth. If the MLflow PVC data is lost (pod restart can wipe it if the DB wasn't populated yet), re-run `make repro` to re-register the model.
+- **After fresh MLflow deploy**: run `make mlflow-kill && make mlflow` then `make bootstrap` to seed the model registry.
 
 ### API serving (churn-api)
 - Loads champion model at startup via `mlflow.sklearn.load_model("models:/churn-model@champion")`
@@ -93,20 +118,22 @@ data/churn_data.csv → preprocess → train.csv/test.csv → train → churn_mo
 - **Probe split**: liveness hits `/health/live` (always 200 = uvicorn is alive), readiness hits `/health` (503 until model loads). Do NOT use the same endpoint for both — the liveness probe will kill pods that are alive but still loading the model.
 - **Probe delays**: liveness `initialDelaySeconds: 30` (Python package imports from Docker overlay FS take ~20s in the cluster), readiness `initialDelaySeconds: 10` (checks frequently, pod just stays "not ready" until model loads, never killed).
 - **Memory**: 2Gi limit. MLflow client + scikit-learn model in memory needs headroom.
-- **churn-api has a LoadBalancer IP** (`192.168.148.253`, port 80) just like ArgoCD — no port-forward needed. Use it directly.
+- **churn-api has a public LoadBalancer IP** (`http://34.180.37.1`) — no port-forward needed.
+- **Multi-arch image**: built as `linux/amd64,linux/arm64` via `docker buildx` in CI (GKE nodes are amd64, Mac dev is arm64). Local QEMU-based cross-builds segfault on Mac M-chips — always let CI build the image.
+- **GHCR package access**: the package `my-neme-eh-jeff/churn-api` must grant Actions access to repo `my-neme-eh-jeff/customer_churn_CICD` with Write role. Do this at `github.com/users/my-neme-eh-jeff/packages/container/churn-api/settings`.
 
 ### ArgoCD (GitOps)
 - Watches `k8s/` directory on `main` branch of `github.com/my-neme-eh-jeff/customer_churn_CICD`
 - Auto-sync enabled — every push to `k8s/` triggers a redeploy
-- Running in `--insecure` mode (HTTP on port 8080) for stable local access
-- Exposed as LoadBalancer service (192.168.148.253) — **do not use port-forward for ArgoCD**, it drops connections
-- **Important**: `argocd-server` deployment has been patched with `args: ["argocd-server", "--insecure"]`
+- GKE: exposed as LoadBalancer `http://34.100.246.237` — no port-forward needed
+- Local vind: was running in `--insecure` HTTP mode (patch via `args` not `command` due to tini entrypoint)
 
 ### CI/CD (GitHub Actions)
 - `lint-and-test`: Runs on every push/PR — ruff + pytest
-- `pipeline` (main only): dvc pull → starts ephemeral MLflow → dvc repro → dvc push → docker build → push to ghcr.io → update `k8s/deployment.yaml` image tag → git commit `[skip ci]` → push → ArgoCD auto-deploys
+- `pipeline` (main only): dvc pull → ephemeral MLflow → dvc repro → dvc push → **multi-arch docker build** (`linux/amd64,linux/arm64`) → push to ghcr.io → update `k8s/deployment.yaml` image tag → git commit `[skip ci]` → ArgoCD auto-deploys
 - `compile-kfp`: Compiles Kubeflow pipeline YAML, uploads as artifact
 - Permissions: `contents: write`, `packages: write`, `id-token: write`
+- Node.js: uses `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24=true` and `setup-uv@v6` to avoid Node.js 20 deprecation warnings
 
 ### Data storage
 - Raw dataset: Kaggle Telco Customer Churn (7,043 rows, 19 features)

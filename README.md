@@ -234,27 +234,72 @@ make serve
 # POST localhost:8000/predict
 ```
 
-## Cluster Setup (first-time or after MLflow data loss)
+## Live Deployment (GKE)
 
-When you deploy MLflow for the first time, or after the MLflow PVC is wiped, the model registry is empty. `churn-api` pods will return 503 until you bootstrap it:
+The stack runs on **GKE Autopilot** (`asia-south1`) using GCP free trial credits. Single-region, single zone — this is a portfolio demo, not a production system designed for HA.
+
+| Service | URL |
+|---------|-----|
+| **MLflow UI** | `http://34.180.20.197:5000` |
+| **ArgoCD UI** | `http://34.100.246.237` (admin / Y6p9-krPfkEhm4Sd) |
+| **KFP UI** | `http://34.93.2.209` |
+| **Prediction API** | `http://34.180.37.1/predict` |
 
 ```bash
-# 1. Deploy MLflow to the cluster (one-time)
-make deploy-mlflow
+# Live prediction
+curl -X POST http://34.180.37.1/predict \
+  -H "Content-Type: application/json" \
+  -d '{"gender":"Female","SeniorCitizen":0,"Partner":"Yes","Dependents":"No",
+       "tenure":12,"PhoneService":"Yes","MultipleLines":"No",
+       "InternetService":"Fiber optic","OnlineSecurity":"No","OnlineBackup":"No",
+       "DeviceProtection":"No","TechSupport":"No","StreamingTV":"No",
+       "StreamingMovies":"No","Contract":"Month-to-month","PaperlessBilling":"Yes",
+       "PaymentMethod":"Electronic check","MonthlyCharges":70.35,"TotalCharges":846.0}'
+# → {"churn":1,"churn_probability":0.71}
 
-# 2. In a separate terminal, keep the port-forward running:
+# Health check
+curl http://34.180.37.1/health
+curl http://34.180.37.1/health/live
+```
+
+### Infrastructure (GKE)
+
+| Component | Details |
+|-----------|---------|
+| GKE Autopilot | `mlops-cluster`, `asia-south1`, 2 nodes (autoscales) |
+| MLflow backend | CloudSQL PostgreSQL 15 (db-f1-micro) |
+| MLflow artifacts | GCS bucket `churn-mlflow-artifacts-project-8018ed81` |
+| DVC remote | GCS bucket `customer-churn-dvc-remote` (pre-existing) |
+| Container images | `ghcr.io/my-neme-eh-jeff/churn-api` (multi-arch: amd64 + arm64) |
+| Workload Identity | Pods use GCP SAs via WI — no service account keys |
+
+### Honest limitations
+
+- **Single zone** (asia-south1-c) — no HA. A zone outage takes everything down.
+- **Free trial credits** — the cluster runs on Google Cloud's $300 free trial. IPs may change if the cluster is recreated.
+- **CI MLflow** — the CI pipeline still uses an ephemeral MLflow for `dvc repro`. Champion promotion in CI is to a throwaway DB; the GKE MLflow is seeded manually via `make bootstrap`. Fixing this requires a stable CI-accessible MLflow endpoint.
+- **KFP** — Kubeflow Pipelines is deployed and the UI is accessible. The pipeline YAML is compiled by CI. Actual pipeline runs via `make kfp-run` still need to be triggered manually.
+
+## Cluster Setup (first-time or after MLflow data loss)
+
+```bash
+# Connect kubectl to GKE
+gcloud container clusters get-credentials mlops-cluster \
+  --region=asia-south1 --project=project-8018ed81-1dfe-470e-aad
+
+# In a separate terminal, port-forward GKE MLflow
 make mlflow-kill && make mlflow
 
-# 3. Bootstrap: train + register @champion in cluster MLflow
+# Bootstrap: train model + register @champion in GKE MLflow
 make bootstrap
 
-# 4. Restart churn-api pods to load the new champion
+# Restart churn-api to load the champion
 kubectl rollout restart deployment/churn-api -n churn-serving
 ```
 
 ### Gotcha: local `mlflow ui` shadows the port-forward
 
-If you ever run `mlflow ui` or `uv run mlflow ui` locally, it occupies port 5000. A subsequent `make mlflow` port-forward will silently fail — `make repro` will then write to your local `mlflow.db` instead of the cluster. Always use `make mlflow-kill` before `make mlflow` to be safe.
+If `mlflow ui` is already running on port 5000, `make mlflow` will silently bind to the wrong process — `make repro` writes to your local `mlflow.db` instead of the cluster. Always run `make mlflow-kill` first.
 
 ## Tools and Why
 
@@ -263,9 +308,10 @@ If you ever run `mlflow ui` or `uv run mlflow ui` locally, it occupies port 5000
 | **DVC** | Data/model versioning + local pipeline | Git-native, lightweight, hash-based caching |
 | **MLflow** | Experiment tracking + model registry | Industry standard, great UI, champion/challenger aliases |
 | **Kubeflow Pipelines** | K8s-native orchestration | Each step is a container, scales independently |
-| **GCS** | Cloud object storage | DVC remote for data and model artifacts |
-| **vind** | Local Kubernetes (vCluster in Docker) | Lighter than kind, built-in LoadBalancer |
+| **GKE Autopilot** | Managed Kubernetes | No node management, pay-per-pod, portfolio-grade |
+| **CloudSQL** | PostgreSQL for MLflow backend | Persistent, managed, survives pod restarts |
+| **GCS** | Cloud object storage | DVC data versioning + MLflow artifact store |
 | **ArgoCD** | GitOps deployment | Push to git = deploy to cluster |
-| **GitHub Actions** | CI/CD | Lint, test, run pipeline, build images |
+| **GitHub Actions** | CI/CD | Lint, test, run pipeline, build multi-arch images |
 | **uv** | Python package management | Fast, replaces pip/poetry/pyenv |
 | **ruff** | Linting + formatting | Replaces flake8/black/isort, Rust-based |
