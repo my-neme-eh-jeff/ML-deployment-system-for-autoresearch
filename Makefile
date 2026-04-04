@@ -92,6 +92,34 @@ gke-connect:
 		--region=asia-south1 \
 		--project=project-8018ed81-1dfe-470e-aad
 
+# Scale down all workloads to 0 replicas to stop compute billing.
+# CloudSQL + Load Balancer IPs + PVCs still bill (~$25/month).
+cluster-sleep:
+	@echo "Scaling all workloads to 0..."
+	@kubectl scale deployment --all -n mlflow --replicas=0 2>/dev/null || true
+	@kubectl scale deployment --all -n churn-serving --replicas=0 2>/dev/null || true
+	@kubectl scale deployment --all -n argocd --replicas=0 2>/dev/null || true
+	@kubectl scale statefulset --all -n argocd --replicas=0 2>/dev/null || true
+	@kubectl scale deployment --all -n kubeflow --replicas=0 2>/dev/null || true
+	@echo "Cluster sleeping. Still billing: CloudSQL + LB IPs + PVCs (~$$25/month)"
+	@echo "Wake up with: make cluster-wake"
+
+# Scale workloads back up after cluster-sleep.
+cluster-wake:
+	@echo "Waking cluster..."
+	@kubectl scale deployment --all -n mlflow --replicas=1 2>/dev/null || true
+	@kubectl scale deployment --all -n churn-serving --replicas=2 2>/dev/null || true
+	@kubectl scale deployment --all -n argocd --replicas=1 2>/dev/null || true
+	@kubectl scale statefulset --all -n argocd --replicas=1 2>/dev/null || true
+	@kubectl scale deployment --all -n kubeflow --replicas=1 2>/dev/null || true
+	@echo "Waiting for MLflow to be ready (~2 min)..."
+	@kubectl wait --for=condition=available --timeout=180s deployment/mlflow -n mlflow 2>/dev/null || true
+	@echo ""
+	@echo "URLs:"
+	@make gke-urls
+	@echo ""
+	@echo "If churn-api returns 503, run: make bootstrap"
+
 gke-status:
 	@echo "=== Nodes ==="
 	@kubectl get nodes
