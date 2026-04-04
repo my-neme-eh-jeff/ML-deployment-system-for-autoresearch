@@ -1,0 +1,22 @@
+# KFP standalone installs the UI with a ClusterIP service.
+# This patch changes it to LoadBalancer so the UI is publicly accessible.
+#
+# Apply AFTER installing KFP standalone:
+#   kubectl apply -f https://github.com/kubeflow/pipelines/releases/download/2.4.1/kfp-standalone-deployment.yaml
+#   kubectl apply -f k8s/kfp-expose.yaml
+#
+# Get the IP:
+#   kubectl get svc ml-pipeline-ui -n kubeflow-pipelines
+apiVersion: v1
+kind: Service
+metadata:
+  name: ml-pipeline-ui
+  namespace: kubeflow-pipelines
+spec:
+  type: LoadBalancer
+  selector:
+    app: ml-pipeline-ui
+  ports:
+    - name: http
+      port: 80
+      targetPort: 3000

@@ -15,8 +15,12 @@ spec:
       labels:
         app: churn-api
     spec:
+      serviceAccountName: churn-api-sa
       containers:
         - name: churn-api
+          # GKE: image is updated by CI to Artifact Registry path.
+          # Local vind: override with ghcr.io/my-neme-eh-jeff/churn-api:latest
+          # CI will replace this line with the Artifact Registry path + commit SHA.
           image: ghcr.io/my-neme-eh-jeff/churn-api:latest
           imagePullPolicy: Always
           ports:
@@ -24,6 +28,8 @@ spec:
           env:
             - name: MLFLOW_TRACKING_URI
               value: http://mlflow.mlflow.svc.cluster.local:5000
+          # Liveness: is the process alive? Uses /health/live (always 200).
+          # Kills and restarts only if the process is truly dead.
           livenessProbe:
             httpGet:
               path: /health/live
@@ -31,6 +37,8 @@ spec:
             initialDelaySeconds: 30
             periodSeconds: 15
             failureThreshold: 3
+          # Readiness: is the model loaded? Uses /health (503 until model loads).
+          # Holds back traffic until the model is ready — pod stays alive.
           readinessProbe:
             httpGet:
               path: /health

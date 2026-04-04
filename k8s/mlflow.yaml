@@ -1,19 +1,26 @@
+# MLflow tracking server — GKE production version.
+#
+# Changes from local vind version:
+#   - SQLite + PVC replaced by CloudSQL PostgreSQL (managed, persistent, HA-ready)
+#   - Local PVC artifacts replaced by GCS bucket (durable, portable)
+#   - Cloud SQL Auth Proxy sidecar for secure DB connection via Workload Identity
+#   - serviceAccountName: mlflow-sa (Workload Identity → GCS + CloudSQL access)
+#   - Service type: LoadBalancer (public IP for UI access + CI/CD)
+#
+# Prerequisites:
+#   1. Run scripts/setup-gcp.sh to create CloudSQL instance, GCS bucket, service accounts
+#   2. kubectl apply -f k8s/serviceaccounts.yaml
+#   3. Create the cloudsql-password secret:
+#      kubectl create secret generic cloudsql-password \
+#        --from-literal=password=YOUR_SECURE_PASSWORD \
+#        -n mlflow
+#
+# Replace project-8018ed81-1dfe-470e-aad and CLOUDSQL_INSTANCE_CONNECTION with your values.
+
 apiVersion: v1
 kind: Namespace
 metadata:
   name: mlflow
----
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: mlflow-pvc
-  namespace: mlflow
-spec:
-  accessModes:
-    - ReadWriteOnce
-  resources:
-    requests:
-      storage: 5Gi
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -30,17 +37,52 @@ spec:
       labels:
         app: mlflow
     spec:
+      serviceAccountName: mlflow-sa
       containers:
+        # ── Cloud SQL Auth Proxy sidecar ──────────────────────────────────
+        # Provides a local TCP connection to CloudSQL via Workload Identity.
+        # MLflow connects to 127.0.0.1:5432 — the proxy tunnels to CloudSQL.
+        - name: cloud-sql-proxy
+          image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.11.4
+          args:
+            # Format: project-8018ed81-1dfe-470e-aad:REGION:INSTANCE_NAME
+            # Replace with your actual connection name from:
+            #   gcloud sql instances describe churn-mlflow --format="value(connectionName)"
+            - "project-8018ed81-1dfe-470e-aad:asia-south1:churn-mlflow"
+            - "--port=5432"
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+
+        # ── MLflow server ─────────────────────────────────────────────────
         - name: mlflow
           image: ghcr.io/mlflow/mlflow:latest
           command: ["mlflow", "server"]
           args:
-            - --backend-store-uri=sqlite:////mlflow/mlflow.db
-            - --artifacts-destination=/mlflow/artifacts
+            # PostgreSQL via Cloud SQL Proxy (localhost)
+            - --backend-store-uri=postgresql://mlflow_user:$(CLOUDSQL_PASSWORD)@127.0.0.1:5432/mlflow_db
+            # GCS for artifacts — Workload Identity handles auth automatically
+            # Replace MLFLOW_ARTIFACTS_BUCKET with your bucket name
+            - --artifacts-destination=gs://churn-mlflow-artifacts-project-8018ed81
             - --serve-artifacts
             - --host=0.0.0.0
             - --port=5000
+            # Allow all Host headers (needed for pods calling via cluster DNS)
+            # Safe for internal cluster traffic; remove if exposing to untrusted networks
             - --allowed-hosts=*
+          env:
+            - name: CLOUDSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: cloudsql-password
+                  key: password
           ports:
             - containerPort: 5000
           readinessProbe:
@@ -64,13 +106,6 @@ spec:
             limits:
               cpu: "1"
               memory: 2Gi
-          volumeMounts:
-            - name: mlflow-storage
-              mountPath: /mlflow
-      volumes:
-        - name: mlflow-storage
-          persistentVolumeClaim:
-            claimName: mlflow-pvc
 ---
 apiVersion: v1
 kind: Service
@@ -78,7 +113,10 @@ metadata:
   name: mlflow
   namespace: mlflow
 spec:
-  type: ClusterIP
+  # LoadBalancer gives a stable public IP for:
+  #   1. MLflow UI access
+  #   2. CI/CD connecting to the real MLflow (no more ephemeral instances)
+  type: LoadBalancer
   selector:
     app: mlflow
   ports:
