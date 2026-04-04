@@ -147,8 +147,9 @@ def _apply_feature_engineering(X: pd.DataFrame, params: dict) -> pd.DataFrame:
 def train(
     train_path: str = "data/processed/train.csv",
     model_path: str = "models/churn_model.pkl",
+    params_path: str = "configs/params.yaml",
 ):
-    with open("configs/params.yaml") as f:
+    with open(params_path) as f:
         all_params = yaml.safe_load(f)
     params = all_params["train"]
 
