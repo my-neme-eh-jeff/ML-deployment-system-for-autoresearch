@@ -11,9 +11,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        env:
+          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v6
 
       - name: Set up Python
         run: uv python install 3.12
@@ -38,11 +40,13 @@ jobs:
       contents: write   # to push deployment.yaml image tag update back to main
       packages: write   # to push image to ghcr.io
       id-token: write   # for GCP Workload Identity Federation
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
       - uses: actions/checkout@v4
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v6
 
       - name: Set up Python
         run: uv python install 3.12
@@ -111,11 +115,13 @@ jobs:
   compile-kfp:
     runs-on: ubuntu-latest
     needs: lint-and-test
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
       - uses: actions/checkout@v4
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v6
 
       - name: Set up Python
         run: uv python install 3.12
