@@ -74,10 +74,11 @@ bootstrap:
 # ── Docker ─────────────────────────────────────────────────────────
 
 docker-build:
-	docker build -t ghcr.io/my-neme-eh-jeff/churn-api:latest .
-
-docker-push:
-	docker push ghcr.io/my-neme-eh-jeff/churn-api:latest
+	docker buildx build \
+		--platform linux/amd64,linux/arm64 \
+		-t ghcr.io/my-neme-eh-jeff/churn-api:latest \
+		--push \
+		.
 
 docker-run:
 	docker run --rm -p 8000:8000 \
