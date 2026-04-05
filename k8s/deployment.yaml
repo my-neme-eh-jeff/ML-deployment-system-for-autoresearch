@@ -21,7 +21,7 @@ spec:
           # GKE: image is updated by CI to Artifact Registry path.
           # Local vind: override with ghcr.io/my-neme-eh-jeff/churn-api:latest
           # CI will replace this line with the Artifact Registry path + commit SHA.
-          image: ghcr.io/my-neme-eh-jeff/churn-api:168e40651cedaa0dd1558ca8839969f09a49e3b5
+          image: ghcr.io/my-neme-eh-jeff/churn-api:12f4c5401d1419401f1780fa504a179e1f469a5f
           imagePullPolicy: Always
           ports:
             - containerPort: 8000
