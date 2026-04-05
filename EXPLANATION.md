@@ -9,19 +9,20 @@
 ## Table of Contents
 
 1. [The One-Sentence Version](#1-the-one-sentence-version)
-2. [The Players — What Each Tool Does](#2-the-players--what-each-tool-does)
-3. [What Is @champion? (The Most Important Concept)](#3-what-is-champion-the-most-important-concept)
-4. [The Full Deployment Chain — Step by Step](#4-the-full-deployment-chain--step-by-step)
-5. [What Happens When an Experiment FAILS](#5-what-happens-when-an-experiment-fails)
-6. [What Is an Annotation and Why Does It Cause a Restart?](#6-what-is-an-annotation-and-why-does-it-cause-a-restart)
-7. [Who Does What — The Responsibility Map](#7-who-does-what--the-responsibility-map)
-8. [The Auto-Experiment Loop — Detailed Walkthrough](#8-the-auto-experiment-loop--detailed-walkthrough)
-9. [Two Flows, Two Triggers (Code vs Model)](#9-two-flows-two-triggers-code-vs-model)
-10. [DVC vs KFP — Why Both Exist](#10-dvc-vs-kfp--why-both-exist)
-11. [The Two-Workload Split (Controller + KFP Pods)](#11-the-two-workload-split-controller--kfp-pods)
-12. [Cost and Sleep/Wake](#12-cost-and-sleepwake)
-13. [Known Limitations (Honest Assessment)](#13-known-limitations-honest-assessment)
-14. [Quick Reference](#14-quick-reference)
+2. [The Players](#2-the-players--what-each-tool-does)
+3. [Component Lifecycle — Every Detail](#3-component-lifecycle--every-detail) (GCS, CloudSQL, MLflow, KFP, ArgoCD, churn-api, CI/CD, auto_loop, DVC)
+4. [What Is @champion?](#4-what-is-champion-the-most-important-concept)
+5. [The Full Deployment Chain](#5-the-full-deployment-chain--step-by-step)
+6. [What Happens When an Experiment FAILS](#6-what-happens-when-an-experiment-fails)
+7. [What Is an Annotation?](#7-what-is-an-annotation-and-why-does-it-cause-a-restart)
+8. [Who Does What](#8-who-does-what--the-responsibility-map)
+9. [The Auto-Experiment Loop](#9-the-auto-experiment-loop--detailed-walkthrough)
+10. [Two Flows, Two Triggers](#10-two-flows-two-triggers-code-vs-model)
+11. [DVC vs KFP](#11-dvc-vs-kfp--why-both-exist)
+12. [The Two-Workload Split](#12-the-two-workload-split-controller--kfp-pods)
+13. [Cost and Sleep/Wake](#13-cost-and-sleepwake)
+14. [Known Limitations](#14-known-limitations-honest-assessment)
+15. [Quick Reference](#15-quick-reference)
 
 ---
 
@@ -54,7 +55,511 @@ auto_loop.py       Asks Claude for ideas, runs experiments    "the scientist who
 
 ---
 
-## 3. What Is @champion? (The Most Important Concept)
+## 3. Component Lifecycle — Every Detail
+
+This section documents every component: what it is, where it runs, what goes in, what comes out, what Kubernetes resources it uses, and why we chose it over alternatives.
+
+---
+
+### 3.1 GCS (Google Cloud Storage)
+
+**What it is:** Cloud object storage. Think of it as a file system in the cloud — you put files in, you get files out.
+
+**Where it runs:** Google's infrastructure (managed, not in our cluster).
+
+**Two separate buckets, two separate jobs:**
+
+```text
+gs://customer-churn-dvc-remote/
+├── dvc-store/         ← DVC cache (content-addressed blobs of CSVs, pkl files)
+│                        Written by: dvc push (from laptop or CI)
+│                        Read by: dvc pull (on laptop or CI)
+│
+└── raw/
+    └── churn_data.csv ← Raw CSV uploaded manually for KFP access
+                         Written by: gsutil cp (one-time)
+                         Read by: KFP preprocess step
+
+gs://churn-mlflow-artifacts-project-8018ed81/
+└── 1/                 ← MLflow experiment artifacts
+    ├── run_abc123/
+    │   └── artifacts/model/
+    │       ├── model.pkl       (19MB sklearn pipeline)
+    │       ├── MLmodel         (metadata)
+    │       └── conda.yaml      (environment)
+    ├── run_def456/...
+    └── run_ghi789/...
+                         Written by: MLflow server (when train step calls log_model)
+                         Read by: MLflow server (when churn-api calls load_model)
+```
+
+**Why GCS over S3/Azure/local?** We're on GCP. GKE pods access GCS natively via Workload Identity — no credentials to manage.
+
+---
+
+### 3.2 CloudSQL (PostgreSQL)
+
+**What it is:** Google-managed PostgreSQL database. MLflow's "brain" — stores every experiment run, metric, parameter, model version, and alias.
+
+**Where it runs:** Google-managed VM in `asia-south1-c`. NOT in our GKE cluster. It's a separate managed service.
+
+**Instance details:**
+
+```text
+Instance name: churn-mlflow
+Engine:        PostgreSQL 15
+Tier:          db-f1-micro (shared CPU, 0.6GB RAM, cheapest tier)
+Region:        asia-south1-c
+Database:      mlflow_db
+User:          mlflow_user
+Public IP:     34.14.223.94 (not used — pods connect via Cloud SQL Proxy)
+```
+
+**What's stored in it:**
+
+```text
+Tables (managed by MLflow, created automatically):
+  experiments       → {id: 1, name: "churn-prediction"}
+  runs              → {run_id: "abc123", experiment_id: 1, status: "FINISHED", ...}
+  params            → {run_id: "abc123", key: "n_estimators", value: "100"}
+  metrics           → {run_id: "abc123", key: "auc_roc", value: 0.834}
+  model_versions    → {name: "churn-model", version: 3, run_id: "abc123",
+                        artifact_uri: "gs://churn-mlflow-artifacts/.../model"}
+  registered_model_aliases → {name: "churn-model", alias: "champion", version: "3"}
+```
+
+**How pods connect:** They DON'T connect directly. A Cloud SQL Auth Proxy sidecar container runs inside the MLflow pod and creates a secure tunnel:
+
+```text
+MLflow container → localhost:5432 → Cloud SQL Proxy sidecar → CloudSQL instance
+                   (TCP tunnel)     (authenticates via       (actual PostgreSQL)
+                                     Workload Identity)
+```
+
+**Why CloudSQL over SQLite?** SQLite is a file. When the pod restarts, the file can be lost (it was on a PVC that was zone-locked and unreliable). CloudSQL is a managed service — it survives pod crashes, node replacements, even cluster deletion. Our model registry persists no matter what.
+
+---
+
+### 3.3 MLflow Tracking Server
+
+**What it is:** An HTTP server that provides a REST API for logging experiment data AND a web UI for viewing it. It does NOT train models. It does NOT serve predictions. It just stores and retrieves experiment metadata and artifacts.
+
+**Where it runs:**
+
+```text
+Namespace:    mlflow
+Deployment:   mlflow (1 replica)
+Containers:   2 (mlflow server + cloud-sql-proxy sidecar)
+Service:      mlflow (LoadBalancer, port 5000)
+Public URL:   http://34.180.20.197:5000
+K8s SA:       mlflow-sa (Workload Identity → GCP mlflow-sa → GCS + CloudSQL access)
+```
+
+**What it stores (two backends):**
+
+```text
+CloudSQL PostgreSQL (the database):
+  - Experiment names and IDs
+  - Run metadata (params, metrics, tags, status)
+  - Model registry (version numbers, aliases like @champion)
+  - Links between versions and artifact URIs
+
+GCS bucket (the files):
+  - Model artifacts (pkl, MLmodel, conda.yaml)
+  - Any files logged with mlflow.log_artifact()
+```
+
+**Two separate interfaces, both go through the same server:**
+
+```text
+Interface 1: REST API (used by training pods and churn-api)
+  POST /api/2.0/mlflow/runs/create           ← train step creates a run
+  POST /api/2.0/mlflow/runs/log-parameter    ← train step logs params
+  POST /api/2.0/mlflow/runs/log-metric       ← evaluate step logs metrics
+  PUT  /api/2.0/mlflow/registered-models/alias ← evaluate step sets @champion
+  GET  /api/2.0/mlflow/registered-models/alias?name=churn-model&alias=champion
+       ↑ churn-api calls this at startup to find the model URI
+
+Interface 2: Web UI (used by humans in browser)
+  http://34.180.20.197:5000 → shows experiments, runs, metrics, model registry
+  The UI makes the same REST API calls that the pods do — it's a single-page app.
+```
+
+**The `--serve-artifacts` flag:** MLflow acts as a proxy for GCS. When a pod calls `log_model()`, the model bytes go to the MLflow server via HTTP, and the server writes them to GCS. When a pod calls `load_model()`, the server reads from GCS and sends the bytes back. Pods never need direct GCS credentials for model artifacts — only the MLflow server needs them.
+
+**The `--disable-security-middleware` flag:** MLflow 3.x added DNS rebinding and CORS protection. On GKE, the MLflow UI (served from `34.180.20.197`) makes API calls to itself (`34.180.20.197/api/...`), which the middleware blocks as "cross-origin". This flag disables all security middleware. Safe for an internal cluster; not safe for public internet.
+
+**Why MLflow over Weights & Biases / Neptune / ClearML?** MLflow is open-source, self-hosted, and the industry standard for experiment tracking. No vendor lock-in, no per-run pricing. We control the data.
+
+---
+
+### 3.4 Kubeflow Pipelines (KFP)
+
+**What it is:** A system for defining, running, and tracking ML pipelines on Kubernetes. Each step (preprocess, train, evaluate) runs in its own container on its own pod with its own resource limits.
+
+**KFP is the TRAINING orchestrator. It decides WHAT runs, WHERE, and in what ORDER. It does NOT serve predictions.**
+
+**Where it runs:**
+
+```text
+Namespace:    kubeflow
+Components:
+  ml-pipeline           → API server (receives pipeline submissions, manages runs)
+  ml-pipeline-ui        → Web UI (LoadBalancer at http://34.93.2.209)
+  mysql                 → Internal database (stores pipeline definitions, run history)
+  minio                 → Internal object store (stores step-to-step artifacts)
+  workflow-controller   → Argo Workflows engine (creates pods for each pipeline step)
+  metadata-grpc         → ML Metadata store (lineage tracking)
+  + several supporting services (persistence agent, scheduled workflow, cache server)
+```
+
+**How a pipeline run works (exact lifecycle):**
+
+```text
+1. You (or auto_loop.py) call:
+   kfp_client.create_run_from_pipeline_package("churn_pipeline.yaml", args={...})
+         │
+         │  HTTP POST to ml-pipeline API server
+         ▼
+2. ml-pipeline stores the run in MySQL and creates an Argo Workflow resource
+         │
+         ▼
+3. workflow-controller (Argo) reads the Workflow and creates pods for each step:
+   
+   For EACH step in the pipeline:
+   ┌────────────────────────────────────────────────────────────────────┐
+   │  Pod: churn-prediction-pipeline-xxx-system-container-impl-yyy     │
+   │  Namespace: kubeflow                                              │
+   │  Image: ghcr.io/my-neme-eh-jeff/churn-kfp:latest                │
+   │  Service Account: pipeline-runner (Workload Identity → GCS)      │
+   │                                                                    │
+   │  Containers:                                                       │
+   │    init: argoexec (quay.io/argoproj/argoexec:v3.4.17)            │
+   │      → Sets up artifact passing between steps                     │
+   │    main: the actual Python function from @dsl.component           │
+   │      → Runs: preprocess() or train() or evaluate()               │
+   │                                                                    │
+   │  Resources (explicitly set to fit on 2-node cluster):             │
+   │    CPU: 200m-300m request, 500m-1000m limit                       │
+   │    Memory: 512Mi request, 1-2Gi limit                             │
+   │                                                                    │
+   │  Artifact I/O:                                                     │
+   │    Inputs: downloaded from MinIO (KFP's internal artifact store)  │
+   │    Outputs: uploaded to MinIO after step completes                │
+   └────────────────────────────────────────────────────────────────────┘
+
+4. Steps execute sequentially (preprocess → train → evaluate):
+
+   PREPROCESS POD:
+     Input:  raw_data_gcs_path = "gs://customer-churn-dvc-remote/raw/churn_data.csv"
+             (reads directly from GCS using gcsfs library)
+     Output: train_csv (KFP Dataset artifact → stored in MinIO)
+             test_csv  (KFP Dataset artifact → stored in MinIO)
+             stats     (KFP Artifact → stored in MinIO)
+
+   TRAIN POD:
+     Input:  train_csv (downloaded from MinIO, written by preprocess)
+     Does:   Fits sklearn pipeline
+             Calls mlflow.sklearn.log_model() → sends model to MLflow → MLflow stores in GCS
+             Calls mlflow.log_params() → stores in CloudSQL via MLflow
+     Output: model_artifact (KFP Model artifact → stored in MinIO)
+             (ALSO: model stored in GCS via MLflow, registered in CloudSQL as new version)
+
+   EVALUATE POD:
+     Input:  test_csv (from MinIO), model_artifact (from MinIO)
+     Does:   Loads model from the KFP artifact (not from MLflow)
+             Computes AUC-ROC, accuracy, F1
+             Calls mlflow.log_metrics() → stores in CloudSQL via MLflow
+             Compares AUC vs current @champion
+             If better: mlflow.set_registered_model_alias("champion", new_version)
+     Output: metrics (KFP Artifact → stored in MinIO)
+
+5. ml-pipeline marks the run as SUCCEEDED or FAILED
+```
+
+**Two artifact stores running simultaneously (this is confusing but correct):**
+
+```text
+MinIO (KFP's internal artifact store):
+  - Stores KFP step-to-step artifacts (train_csv, test_csv, model_artifact)
+  - Used ONLY by KFP for passing data between pipeline steps
+  - Lives at minio.kubeflow.svc.cluster.local:9000
+  - Data here is ephemeral — cleared when runs are deleted
+
+GCS via MLflow (production artifact store):
+  - Stores the PRODUCTION model artifacts (model.pkl, MLmodel, conda.yaml)
+  - Written by train step via mlflow.log_model()
+  - Read by churn-api via mlflow.load_model()
+  - Persists forever in gs://churn-mlflow-artifacts-...
+```
+
+**The base image (`ghcr.io/my-neme-eh-jeff/churn-kfp:latest`):**
+Pipeline steps run inside this image. It has pandas, sklearn, mlflow, gcsfs, and kfp pre-installed. We built a custom image because GKE Autopilot limits ephemeral storage to 1Gi — runtime `pip install` of these packages exceeds that limit and causes pod eviction.
+
+**Why KFP over Airflow / Prefect / Dagster?** KFP is Kubernetes-native (each step is a pod), part of the Kubeflow ecosystem (alongside KServe, Katib), and has a built-in pipeline visualization UI. Airflow is more general-purpose (ETL, data engineering); KFP is specifically designed for ML pipelines.
+
+---
+
+### 3.5 ArgoCD
+
+**What it is:** A GitOps controller. It continuously compares the Kubernetes cluster state against a Git repository and makes the cluster match Git.
+
+**Where it runs:**
+
+```text
+Namespace:    argocd
+Components:
+  argocd-server                  → UI + API (LoadBalancer at http://34.100.246.237)
+  argocd-application-controller  → The reconciler (compares git vs cluster every 3 min)
+  argocd-repo-server             → Clones git repos, renders manifests
+  argocd-redis                   → Cache for application state
+  argocd-dex-server              → Authentication (SSO, not used by us)
+  argocd-notifications           → Notification delivery (not configured)
+  argocd-applicationset          → Multi-cluster management (not used)
+
+Application definition: argocd/application.yaml
+  source:
+    repoURL: https://github.com/my-neme-eh-jeff/customer_churn_CICD.git
+    targetRevision: main
+    path: k8s                ← ArgoCD watches EVERY yaml file in this directory
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: churn-serving  ← resources get applied here
+  syncPolicy:
+    automated:
+      prune: true            ← deletes resources removed from git
+      selfHeal: true         ← reverts manual kubectl changes to match git
+```
+
+**The sync loop (what ArgoCD actually does):**
+
+```text
+Every ~3 minutes (or on webhook):
+  1. Clone https://github.com/my-neme-eh-jeff/customer_churn_CICD.git
+  2. Read all YAML files in k8s/ directory
+  3. Compare each resource against the live cluster state
+  4. If different → kubectl apply the git version
+  5. If same → do nothing
+
+Example:
+  Git says:   k8s/deployment.yaml → annotation "mlflow/champion-version: 3"
+  Cluster has: deployment.yaml → annotation "mlflow/champion-version: 2"
+  ArgoCD:     DIFFERENT → applies git version → Kubernetes creates new pods
+```
+
+**What ArgoCD manages (the k8s/ directory):**
+
+```text
+k8s/
+├── deployment.yaml          → churn-api Deployment (image, probes, resources, annotations)
+├── service.yaml             → churn-api LoadBalancer Service (port 80 → 8000)
+├── namespace.yaml           → churn-serving namespace
+├── mlflow.yaml              → MLflow Deployment + Service + Namespace (all-in-one)
+├── serviceaccounts.yaml     → K8s SAs with Workload Identity annotations
+├── hpa.yaml                 → HorizontalPodAutoscaler for churn-api (2-10 replicas)
+├── pdb.yaml                 → PodDisruptionBudgets for churn-api and mlflow
+└── kfp-expose.yaml          → Patches KFP UI to LoadBalancer
+```
+
+**Why ArgoCD over Flux / Helm / raw kubectl?** ArgoCD has the best UI (shows sync status, diff view, resource tree). Flux is equally good for GitOps but has no built-in UI. Raw kubectl doesn't track desired state — you can't tell if the cluster has drifted from what you intended.
+
+---
+
+### 3.6 churn-api (Inference Server)
+
+**What it is:** A FastAPI web server that loads the champion model from MLflow at startup and serves prediction requests via HTTP.
+
+**Where it runs:**
+
+```text
+Namespace:    churn-serving
+Deployment:   churn-api (2 replicas, HPA scales 2-10)
+Image:        ghcr.io/my-neme-eh-jeff/churn-api:latest (multi-arch amd64+arm64)
+Service:      churn-api (LoadBalancer, port 80 → container port 8000)
+Public URL:   http://34.180.37.1
+K8s SA:       churn-api-sa (no GCS access needed — goes through MLflow)
+```
+
+**Lifecycle of a pod (from creation to serving):**
+
+```text
+1. Kubernetes creates the pod (triggered by ArgoCD sync or scaling event)
+2. Container starts: /app/.venv/bin/uvicorn src.api:app --host 0.0.0.0 --port 8000
+3. Uvicorn binds to port 8000 IMMEDIATELY (< 2 seconds)
+4. FastAPI startup event fires → spawns background thread:
+     threading.Thread(target=_load_model_in_background).start()
+5. Background thread calls:
+     mlflow.sklearn.load_model("models:/churn-model@champion")
+     → HTTP to MLflow server → resolves @champion → downloads model.pkl from GCS
+     → deserializes into Python object (global variable `model`)
+     This takes 30-60 seconds.
+6. WHILE model is loading:
+     /health/live → 200 (liveness probe passes → pod is not killed)
+     /health      → 503 (readiness probe fails → pod receives no traffic)
+     /predict     → 503 (model not ready)
+7. Model finishes loading:
+     /health      → 200 (readiness probe passes → pod receives traffic)
+     /predict     → works (uses in-memory model object, ~1ms per prediction)
+```
+
+**Probes (how Kubernetes knows the pod is healthy):**
+
+```text
+Liveness probe:    GET /health/live every 15s, initial delay 30s
+  Returns: 200 ALWAYS (if uvicorn is running, the process is alive)
+  Purpose: Restarts the pod ONLY if the process crashes entirely
+  Does NOT kill the pod during model loading (unlike the old design)
+
+Readiness probe:   GET /health every 10s, initial delay 10s
+  Returns: 200 if model loaded, 503 if still loading
+  Purpose: Removes pod from service endpoints until model is ready
+  Prevents traffic going to a pod that can't serve predictions yet
+```
+
+**Endpoints:**
+
+```text
+GET  /health/live  → {"status": "alive"}                     (always 200)
+GET  /health       → {"status": "healthy", "model_loaded": true}  (200 or 503)
+POST /predict      → {"churn": 1, "churn_probability": 0.71}
+     Body: JSON with 19 customer features
+```
+
+**Why FastAPI over Flask / KServe / Seldon?** FastAPI has async support, automatic OpenAPI docs, and Pydantic validation. KServe/Seldon are ML-specific serving frameworks that add auto-scaling, canary deployments, and multi-model serving — but they require Istio/Knative (heavy dependencies that won't fit on our 2-node cluster). For a single sklearn model on CPU, FastAPI is the right level of complexity. In interviews: "I used FastAPI to understand serving internals; for production multi-model serving I'd evaluate KServe."
+
+---
+
+### 3.7 GitHub Actions (CI/CD)
+
+**What it is:** Cloud-hosted workflow runner triggered by git push events.
+
+**Where it runs:** GitHub's infrastructure (Ubuntu runners, NOT in our GKE cluster).
+
+**Three jobs, triggered on every push to main:**
+
+```text
+Job 1: lint-and-test (runs on every push + PR)
+  ├── ruff check (linting)
+  ├── ruff format --check (formatting)
+  └── pytest tests/ -v (10 tests with tiny synthetic data)
+  Duration: ~35 seconds
+
+Job 2: pipeline (runs only on main branch pushes, after lint passes)
+  ├── Authenticate to GCP (Workload Identity Federation → github-cicd SA)
+  ├── dvc pull (download data from GCS)
+  ├── Start ephemeral MLflow (sqlite:///mlflow_ci.db — THROWAWAY)
+  ├── dvc repro (run pipeline against ephemeral MLflow)
+  ├── dvc push (upload artifacts to GCS)
+  ├── docker buildx build --platform linux/amd64,linux/arm64 → churn-api
+  ├── docker buildx build --platform linux/amd64,linux/arm64 → churn-kfp
+  ├── Push both images to ghcr.io
+  └── Update k8s/deployment.yaml image SHA → git commit [skip ci] → push
+  Duration: ~14 minutes (docker buildx is slow for multi-arch)
+
+Job 3: compile-kfp (runs on every push after lint passes)
+  ├── python pipelines/churn_pipeline.py (compiles to YAML)
+  └── Upload churn_pipeline.yaml as GitHub Actions artifact
+  Duration: ~15 seconds
+```
+
+**Known architectural gap:** The `dvc repro` in Job 2 trains against an ephemeral MLflow that is deleted when the job ends. The champion promotion goes to a throwaway database. This is documented in the README as a known limitation. The fix (not yet implemented): remove `dvc repro` from CI entirely — CI should only lint, test, and build images. Training should happen via KFP.
+
+---
+
+### 3.8 auto_loop.py (Auto-Experiment Controller)
+
+**What it is:** A Python script that orchestrates autonomous model improvement by calling Claude API, submitting KFP pipeline runs, and committing improvements to git.
+
+**Where it runs:** Currently on your laptop. Target: Kubernetes Job in the cluster.
+
+**Inputs:**
+
+```text
+- configs/params.yaml     (current hyperparameters)
+- src/train.py            (current model code)
+- src/preprocess.py       (current preprocessing code)
+- auto_experiment/program.md  (research directions for Claude)
+- auto_experiment/history.tsv (what was tried, what worked)
+- MLflow API              (current @champion version and AUC)
+- ANTHROPIC_API_KEY       (from .env file)
+```
+
+**Outputs (on successful experiment):**
+
+```text
+- Modified configs/params.yaml (the improvement that worked)
+- Modified k8s/deployment.yaml (annotation bump for deployment)
+- git commit on main branch
+- New MLflow run in "auto-experiment" experiment
+- New row in auto_experiment/history.tsv
+```
+
+**Outputs (on failed experiment):**
+
+```text
+- git checkout -- . (all changes reverted, clean state)
+- New MLflow run in "auto-experiment" experiment (outcome: "reverted")
+- New row in auto_experiment/history.tsv (outcome: "reverted")
+- NOTHING committed, NOTHING deployed
+```
+
+**Why Claude over GPT-4 / Gemini / local LLMs?** Claude's API has structured JSON output, long context windows (for sending full source files), and strong code generation. The choice is pragmatic — any LLM with JSON output support would work. The `--model` flag in auto_loop.py allows switching models.
+
+---
+
+### 3.9 DVC (Data Version Control)
+
+**What it is:** A CLI tool that versions large files (CSVs, model pickles) by storing them in GCS and keeping only tiny pointer files in git.
+
+**Where it runs:** Your laptop and CI runners (NOT in the cluster).
+
+**What it tracks:**
+
+```text
+Git repository:                          GCS bucket:
+  data/churn_data.csv.dvc  ──────────→  gs://customer-churn-dvc-remote/dvc-store/ab/cd1234...
+  (12 bytes, hash pointer)               (954KB, actual CSV file)
+  
+  dvc.lock                 ──────────→  Hashes of ALL pipeline stage inputs/outputs
+  (records exact state)                  If any input changes, the stage re-runs
+```
+
+**The pipeline (dvc.yaml):**
+
+```text
+stages:
+  preprocess:
+    cmd: uv run python src/preprocess.py
+    deps: [data/churn_data.csv, src/preprocess.py, configs/params.yaml]
+    outs: [data/processed/train.csv, data/processed/test.csv, data/processed/stats.json]
+
+  train:
+    cmd: uv run python src/train.py
+    deps: [data/processed/train.csv, src/train.py, configs/params.yaml]
+    outs: [models/churn_model.pkl, models/run_id.txt]
+
+  evaluate:
+    cmd: uv run python src/evaluate.py
+    deps: [data/processed/test.csv, models/churn_model.pkl, src/evaluate.py, models/run_id.txt]
+    metrics: [metrics.json]
+```
+
+**DVC's role vs KFP's role:**
+
+```text
+DVC  = local development pipeline runner + data versioning
+KFP  = production pipeline runner on Kubernetes
+
+Same logical pipeline, different execution environments.
+DVC does NOT run in production. KFP does.
+DVC is ALSO used for data versioning (dvc push/pull) which KFP does not do.
+```
+
+**Why DVC over raw GCS / git-lfs / lakefs?** DVC integrates with git natively (pointer files are committed alongside code). Hash-based caching means `dvc repro` skips unchanged stages. The `.dvc` files make data reproducibility a git operation: `git checkout v1.0 && dvc pull` gives you the exact data from that version.
+
+---
+
+## 4. What Is @champion? (The Most Important Concept)
 
 ### It's a pointer, like a git branch
 
@@ -97,7 +602,7 @@ This gap is what the annotation-bump mechanism closes (explained in Section 6).
 
 ---
 
-## 4. The Full Deployment Chain — Step by Step
+## 5. The Full Deployment Chain — Step by Step
 
 Here is exactly what happens when the auto-loop finds a better model. Every step, every actor, every decision.
 
@@ -221,7 +726,7 @@ STEP 4: ArgoCD detects the git change and deploys
 
 ---
 
-## 5. What Happens When an Experiment FAILS
+## 6. What Happens When an Experiment FAILS
 
 Two types of failure, both are safe:
 
@@ -277,7 +782,7 @@ KFP run status: FAILED
 
 ---
 
-## 6. What Is an Annotation and Why Does It Cause a Restart?
+## 7. What Is an Annotation and Why Does It Cause a Restart?
 
 ### Annotations in plain English
 
@@ -333,7 +838,7 @@ The annotation in git is auditable: you can `git log k8s/deployment.yaml` and se
 
 ---
 
-## 7. Who Does What — The Responsibility Map
+## 8. Who Does What — The Responsibility Map
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
@@ -389,7 +894,7 @@ The annotation in git is auditable: you can `git log k8s/deployment.yaml` and se
 
 ---
 
-## 8. The Auto-Experiment Loop — Detailed Walkthrough
+## 9. The Auto-Experiment Loop — Detailed Walkthrough
 
 ```
 auto_loop.py starts (K8s Job or local)
@@ -447,7 +952,7 @@ By reverting (`git checkout -- .`), the next iteration starts from the **last kn
 
 ---
 
-## 9. Two Flows, Two Triggers (Code vs Model)
+## 10. Two Flows, Two Triggers (Code vs Model)
 
 There are two completely independent reasons a deployment might happen:
 
@@ -492,7 +997,7 @@ FLOW 2: Model improved (auto-loop found a better model)
 
 ---
 
-## 10. DVC vs KFP — Why Both Exist
+## 11. DVC vs KFP — Why Both Exist
 
 ```
                   DVC                           KFP
@@ -514,7 +1019,7 @@ In the auto-experiment loop, **KFP is the runner, not DVC**. The auto-loop submi
 
 ---
 
-## 11. The Two-Workload Split (Controller + KFP Pods)
+## 12. The Two-Workload Split (Controller + KFP Pods)
 
 ```
 Workload 1: auto-loop controller              Workload 2: KFP pipeline pods
@@ -531,7 +1036,7 @@ Resources: Tiny (just API calls)              Resources: As needed (CPU, memory,
 
 ---
 
-## 12. Cost and Sleep/Wake
+## 13. Cost and Sleep/Wake
 
 ### Monthly cost (24/7 running)
 
@@ -554,7 +1059,7 @@ make cluster-wake     # Scale back up. Same IPs. ~3 min.
 
 ---
 
-## 13. Known Limitations (Honest Assessment)
+## 14. Known Limitations (Honest Assessment)
 
 | Item | Status | Detail |
 |------|--------|--------|
@@ -567,7 +1072,7 @@ make cluster-wake     # Scale back up. Same IPs. ~3 min.
 
 ---
 
-## 14. Quick Reference
+## 15. Quick Reference
 
 ### Live URLs (wake cluster first with `make cluster-wake`)
 
