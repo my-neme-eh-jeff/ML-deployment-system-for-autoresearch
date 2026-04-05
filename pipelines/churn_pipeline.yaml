@@ -82,10 +82,9 @@ deploymentSpec:
         - -c
         - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
           \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
-          \ python3 -m pip install --quiet --no-warn-script-location 'pandas==2.3.3'\
-          \ 'scikit-learn==1.8.0' 'mlflow==3.10.1'  &&  python3 -m pip install --quiet\
-          \ --no-warn-script-location 'kfp==2.16.0' '--no-deps' 'typing-extensions>=3.7.4,<5;\
-          \ python_version<\"3.9\"' && \"$0\" \"$@\"\n"
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.16.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
         - sh
         - -ec
         - 'program_path=$(mktemp -d)
@@ -132,7 +131,7 @@ deploymentSpec:
           \ Exception:\n        client.set_registered_model_alias(MODEL_NAME, \"champion\"\
           , new_version.version)\n        print(f\"First model \u2014 v{new_version.version}\
           \ promoted to champion\")\n\n"
-        image: python:3.12-slim
+        image: ghcr.io/my-neme-eh-jeff/churn-kfp:latest
         resources:
           cpuLimit: 0.5
           cpuRequest: 0.2
@@ -154,10 +153,9 @@ deploymentSpec:
         - -c
         - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
           \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
-          \ python3 -m pip install --quiet --no-warn-script-location 'pandas==2.3.3'\
-          \ 'scikit-learn==1.8.0' 'gcsfs==2025.7.0'  &&  python3 -m pip install --quiet\
-          \ --no-warn-script-location 'kfp==2.16.0' '--no-deps' 'typing-extensions>=3.7.4,<5;\
-          \ python_version<\"3.9\"' && \"$0\" \"$@\"\n"
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.16.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
         - sh
         - -ec
         - 'program_path=$(mktemp -d)
@@ -185,7 +183,7 @@ deploymentSpec:
           \        \"train_rows\": len(train_df),\n        \"test_rows\": len(test_df),\n\
           \        \"churn_rate\": float(df[TARGET].mean()),\n    }\n    with open(stats.path,\
           \ \"w\") as f:\n        json.dump(stats_data, f, indent=2)\n\n"
-        image: python:3.12-slim
+        image: ghcr.io/my-neme-eh-jeff/churn-kfp:latest
         resources:
           cpuLimit: 0.5
           cpuRequest: 0.2
@@ -207,10 +205,9 @@ deploymentSpec:
         - -c
         - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
           \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
-          \ python3 -m pip install --quiet --no-warn-script-location 'pandas==2.3.3'\
-          \ 'scikit-learn==1.8.0' 'mlflow==3.10.1'  &&  python3 -m pip install --quiet\
-          \ --no-warn-script-location 'kfp==2.16.0' '--no-deps' 'typing-extensions>=3.7.4,<5;\
-          \ python_version<\"3.9\"' && \"$0\" \"$@\"\n"
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.16.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
         - sh
         - -ec
         - 'program_path=$(mktemp -d)
@@ -253,7 +250,7 @@ deploymentSpec:
           , \"kubeflow-pipelines\")\n        mlflow.sklearn.log_model(\n         \
           \   pipeline,\n            artifact_path=\"model\",\n            registered_model_name=\"\
           churn-model\",\n        )\n\n"
-        image: python:3.12-slim
+        image: ghcr.io/my-neme-eh-jeff/churn-kfp:latest
         resources:
           cpuLimit: 1.0
           cpuRequest: 0.3
