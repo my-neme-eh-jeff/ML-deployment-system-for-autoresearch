@@ -74,10 +74,12 @@ spec:
             - --serve-artifacts
             - --host=0.0.0.0
             - --port=5000
-            # Allow all Host headers (needed for pods calling via cluster DNS)
-            - --allowed-hosts=*
-            # Allow CORS from any origin (needed for MLflow UI's own API calls)
-            - --cors-allowed-origins=*
+            # Disable MLflow's security middleware (CORS + DNS rebinding protection).
+            # Safe for this GKE internal deployment — access is controlled at the
+            # network layer (GKE LoadBalancer). Without this, the UI returns
+            # INTERNAL_ERROR on all API calls because MLflow 3.x blocks requests
+            # from its own IP as "cross-origin".
+            - --disable-security-middleware
           env:
             - name: CLOUDSQL_PASSWORD
               valueFrom:
