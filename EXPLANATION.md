@@ -1,717 +1,580 @@
-# MLOps Architecture — Technical Design Document
+# How Everything Works — End-to-End Technical Guide
 
-> Written for a teammate or manager picking up this project for the first time.
-> Covers what exists, why it was built this way, what is wrong, and the target architecture.
+> Written so that someone who has never seen this project can understand
+> exactly what happens when a model is trained, promoted, and deployed.
+> Over-explanation is intentional. Every "but why?" should be answered.
 
 ---
 
 ## Table of Contents
 
-1. [Project Goal](#1-project-goal)
-2. [The Full System at a Glance](#2-the-full-system-at-a-glance)
-3. [Component Deep Dives](#3-component-deep-dives)
-4. [The Current CI/CD Flow — And Why It's Broken](#4-the-current-cicd-flow--and-why-its-broken)
-5. [The Target Architecture](#5-the-target-architecture)
-6. [The Auto-Experiment Loop](#6-the-auto-experiment-loop)
-7. [The Deployment Gap — How Champion Promotion Triggers a Rollout](#7-the-deployment-gap--how-champion-promotion-triggers-a-rollout)
-8. [The Two-Workload Split](#8-the-two-workload-split)
-9. [What to Fix and in What Order](#9-what-to-fix-and-in-what-order)
-10. [Cost and Operations](#10-cost-and-operations)
-11. [What Is Working vs What Is Not](#11-what-is-working-vs-what-is-not)
-12. [Quick Reference](#12-quick-reference)
+1. [The One-Sentence Version](#1-the-one-sentence-version)
+2. [The Players — What Each Tool Does](#2-the-players--what-each-tool-does)
+3. [What Is @champion? (The Most Important Concept)](#3-what-is-champion-the-most-important-concept)
+4. [The Full Deployment Chain — Step by Step](#4-the-full-deployment-chain--step-by-step)
+5. [What Happens When an Experiment FAILS](#5-what-happens-when-an-experiment-fails)
+6. [What Is an Annotation and Why Does It Cause a Restart?](#6-what-is-an-annotation-and-why-does-it-cause-a-restart)
+7. [Who Does What — The Responsibility Map](#7-who-does-what--the-responsibility-map)
+8. [The Auto-Experiment Loop — Detailed Walkthrough](#8-the-auto-experiment-loop--detailed-walkthrough)
+9. [Two Flows, Two Triggers (Code vs Model)](#9-two-flows-two-triggers-code-vs-model)
+10. [DVC vs KFP — Why Both Exist](#10-dvc-vs-kfp--why-both-exist)
+11. [The Two-Workload Split (Controller + KFP Pods)](#11-the-two-workload-split-controller--kfp-pods)
+12. [Cost and Sleep/Wake](#12-cost-and-sleepwake)
+13. [Known Limitations (Honest Assessment)](#13-known-limitations-honest-assessment)
+14. [Quick Reference](#14-quick-reference)
 
 ---
 
-## 1. Project Goal
+## 1. The One-Sentence Version
 
-Predict which Telco customers will churn. The **model is intentionally simple** (Random Forest). The point is the infrastructure around it:
-
-> "Auto-research autonomously improves the model overnight. When it finds something better, it gets deployed automatically. Zero human in the loop."
-
-Everything in this document is evaluated against that goal.
+An LLM (Claude) proposes changes to improve a churn prediction model, KFP trains and evaluates each proposal on Kubernetes, and if the model improves, the auto-loop pushes a git commit that makes ArgoCD automatically roll out new serving pods that load the improved model from MLflow.
 
 ---
 
-## 2. The Full System at a Glance
+## 2. The Players — What Each Tool Does
+
+Think of this as a relay race. Each tool does ONE job and passes the baton:
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                          TWO INDEPENDENT FLOWS                              │
-│                                                                             │
-│  CODE FLOW                          MODEL FLOW                              │
-│  ──────────                         ───────────                             │
-│  src/ changed                       Auto-loop proposes experiment           │
-│      │                                  │                                   │
-│      ▼                                  ▼                                   │
-│  CI: lint → test                    KFP pipeline runs on GKE                │
-│      │                              preprocess → train → evaluate           │
-│      ▼                                  │                                   │
-│  docker build → push image              ▼                                   │
-│      │                              MLflow: @champion alias updated         │
-│      ▼                                  │                                   │
-│  k8s/deployment.yaml updated           ▼                                   │
-│      │                              Rollout triggered (annotation bump)     │
-│      ▼                                  │                                   │
-│  ArgoCD syncs → new pods            churn-api pods restart                  │
-│      │                                  │                                   │
-│      └──────────────────────────────────┘                                   │
-│                      Both paths end here:                                   │
-│           churn-api serving predictions from @champion model                │
-└─────────────────────────────────────────────────────────────────────────────┘
+Tool               What it does                              Analogy
+────               ────────────                              ───────
+DVC                Versions data files in GCS                "git for CSVs and model files"
+MLflow             Stores experiment results + model registry "a database of every model ever trained"
+KFP                Runs training pipeline on Kubernetes       "each step in its own container"
+ArgoCD             Deploys whatever is in git to the cluster  "if git says X, cluster becomes X"
+churn-api          Serves predictions from the champion model "the waiter who brings you the food"
+auto_loop.py       Asks Claude for ideas, runs experiments    "the scientist who designs experiments"
 ```
 
-These flows must be kept **separate**. Code changes deploy new serving infrastructure. Model changes promote a new champion. They are independent events.
+**Critical insight:** These tools do NOT communicate with each other directly.
+- MLflow doesn't tell ArgoCD anything.
+- ArgoCD doesn't know MLflow exists.
+- KFP doesn't restart pods.
+- The auto-loop controller is the one that connects them — through **git commits**.
 
 ---
 
-## 3. Component Deep Dives
+## 3. What Is @champion? (The Most Important Concept)
 
-### 3.1 DVC — Data Version Control
+### It's a pointer, like a git branch
 
-DVC is like Git, but for large files (CSVs, model pickles). Git stores a tiny pointer file (`.dvc`); the actual data lives in GCS.
+In git, `main` is a branch name that points to a specific commit. You can move it to point to a different commit. The old commit still exists — you just changed where the name points.
 
-```
-What's in Git:                    What's in GCS:
-──────────────                    ──────────────
-data/churn_data.csv.dvc           data/churn_data.csv (7,043 rows)
-models/churn_model.pkl.dvc        models/churn_model.pkl (19MB)
-dvc.lock (file hashes)            data/processed/train.csv
-                                  data/processed/test.csv
-```
-
-**DVC's role:** data versioning + local pipeline runner.
-**DVC is NOT the production pipeline runner.** That's KFP.
-
-When you run `make repro`, DVC executes `preprocess.py → train.py → evaluate.py` locally and tracks which files changed. If `train.py` changes but `preprocess.py` and the raw data don't, DVC skips preprocess and only re-runs train + evaluate. This is the caching mechanism.
-
-### 3.2 MLflow — Experiment Tracking + Model Registry
-
-Two jobs in one tool:
-
-**Job 1: Experiment Tracking** — every training run logs parameters and metrics.
+MLflow's `@champion` works exactly the same way:
 
 ```
-Training run logged to MLflow:
-  experiment: "churn-prediction"
-  run_id: abc123
-  params:
-    n_estimators: 100
-    model_type: RandomForestClassifier
-  metrics:
-    auc_roc: 0.8162
-    accuracy: 0.7807
-    f1: 0.5353
-  artifact: model.pkl (stored in GCS via --serve-artifacts)
+Git:                                 MLflow:
+────                                 ──────
+main → commit abc123                 @champion → model version 2
+                                     @challenger → model version 3
+
+You run: git checkout -B main def456 You run: client.set_registered_model_alias(
+                                               "churn-model", "champion", "3")
+
+Now:                                 Now:
+main → commit def456                 @champion → model version 3
+(abc123 still exists)                (version 2 still exists)
 ```
 
-**Job 2: Model Registry** — named versions with promotion aliases.
+### Where @champion lives
 
-```
-"churn-model" registry:
-  v1: auc=0.816  ← @challenger
-  v2: auc=0.834  ← @champion  ◄── churn-api ALWAYS loads this
-  v3: auc=0.821  (no alias)
-```
+It's a row in MLflow's PostgreSQL database (CloudSQL). Not a file, not a Kubernetes object, not a git tag. Just a database entry that says: *"the alias 'champion' for model 'churn-model' currently points to version 2."*
 
-`@champion` is just a pointer. Moving it to v3 does NOT automatically redeploy anything. The pod must restart to pick up the new champion. This is the central deployment gap (see Section 7).
+### What loads @champion
 
-**Why CloudSQL instead of SQLite:**
-SQLite is a single file on disk. When the MLflow pod restarts or the node is replaced, the file can be lost. CloudSQL is a managed PostgreSQL instance — it persists independently of pods and nodes. This is the difference between "data that survives crashes" and "data that doesn't."
-
-```
-Local setup (vind cluster):         GKE setup:
-──────────────────────────          ──────────
-MLflow pod                          MLflow pod
-  └── /mlflow/mlflow.db             ├── cloud-sql-proxy sidecar
-      (SQLite on PVC)               │     └── tunnel to CloudSQL
-      LOST on PVC delete            └── PostgreSQL (managed, persists forever)
-```
-
-The `cloud-sql-proxy` sidecar runs inside the MLflow pod and creates a local TCP tunnel to CloudSQL. The MLflow server connects to `127.0.0.1:5432` as if it were a local database.
-
-### 3.3 Kubeflow Pipelines (KFP)
-
-KFP runs the same ML pipeline as DVC but as containerized steps on Kubernetes.
-
-```
-DVC (local):                        KFP (Kubernetes):
-────────────                        ─────────────────
-dvc repro                           kfp_client.create_run(...)
-  → python preprocess.py              → Pod 1: preprocess
-  → python train.py                     writes train.csv to GCS
-  → python evaluate.py               → Pod 2: train
-  (all on your laptop)                  reads train.csv from GCS
-                                        writes model to GCS
-                                        logs to MLflow
-                                     → Pod 3: evaluate
-                                        reads model from GCS
-                                        promotes @champion in MLflow
-```
-
-**Key difference:** DVC runs steps as subprocesses on one machine. KFP runs each step in an isolated container on its own node. Each step can have different resource limits (Pod 2 could request a GPU if needed). Each step's outputs are immutable artifacts stored in GCS.
-
-**Why both?** DVC is for local development (fast, no cluster needed). KFP is for production training runs (cloud-native, scalable, auditable).
-
-**The pipeline definition:** `pipelines/churn_pipeline.py` is compiled to `pipelines/churn_pipeline.yaml` (a Kubernetes workflow definition). You upload that YAML to the KFP UI (`http://34.93.2.209`), or submit it via the Python client.
-
-### 3.4 ArgoCD — GitOps Deployment Controller
-
-ArgoCD watches a directory in a Git repository and continuously reconciles the Kubernetes cluster to match what's in Git.
-
-```
-Git repo (main branch, k8s/ directory)
-        │
-        │ ArgoCD polls every ~3 min
-        ▼
-ArgoCD compares:
-  "Git says replicas: 2, image: ghcr.io/...@sha256:abc"
-  "Cluster has replicas: 2, image: ghcr.io/...@sha256:abc"
-  → SAME. Nothing to do.
-
-Git repo changes (deployment.yaml updated):
-  "Git says image: ghcr.io/...@sha256:xyz"
-  "Cluster has image: ghcr.io/...@sha256:abc"
-  → DIFFERENT. Apply the change.
-  → New pods created with new image.
-  → Old pods terminated after new ones pass readiness probe.
-```
-
-**What triggers a deploy:**
-1. The Docker image SHA changes in `k8s/deployment.yaml` (code change)
-2. An annotation in the pod template changes (model change, see Section 7)
-
-**What does NOT trigger a deploy:** the MLflow `@champion` alias changing. ArgoCD doesn't know about MLflow.
-
-### 3.5 churn-api — The Inference Server
-
-A FastAPI application serving predictions. The critical design decision: **the model is NOT baked into the Docker image.**
-
+The churn-api pods, at startup, run:
 ```python
-# On startup, the pod loads from MLflow registry:
 model = mlflow.sklearn.load_model("models:/churn-model@champion")
 ```
 
-This means:
-- Deploying new code → build new image → new pods load current `@champion`
-- Promoting a new `@champion` → existing pods still serve old model until restarted
+This call goes to the MLflow server, which resolves `@champion` to version 2 (or whatever it currently points to), downloads that model's pickle file from GCS, and deserializes it into memory.
 
-The readiness probe (`/health`) returns 503 until the model finishes loading. The liveness probe (`/health/live`) returns 200 immediately (pod is alive, even if model isn't loaded yet). This prevents Kubernetes from killing a pod that is alive but still downloading the 19MB model artifact.
+### The critical gap
 
----
+**Moving the @champion pointer does NOT restart pods.** If @champion moves from v2 to v3 but the pods don't restart, they keep serving v2. The pods loaded v2 at startup and have it in memory. They don't poll MLflow for changes.
 
-## 4. The Current CI/CD Flow — And Why It's Broken
-
-Here is what CI actually does today:
-
-```
-git push to main
-    │
-    ▼
-Job: lint-and-test (runs on every push)
-    ├── ruff check (lint)
-    ├── ruff format --check
-    └── pytest tests/ (10 tests with tiny synthetic data)
-
-Job: pipeline (runs on main branch only)
-    ├── Authenticate to GCP (Workload Identity)
-    ├── dvc pull (get data from GCS)
-    ├── 🚨 START EPHEMERAL MLFLOW (SQLite, local to runner)
-    ├── 🚨 dvc repro (trains model against EPHEMERAL MLflow)
-    ├── dvc push (pushes DVC artifacts to GCS)
-    ├── docker build --platform linux/amd64,linux/arm64
-    ├── docker push → ghcr.io/my-neme-eh-jeff/churn-api:$SHA
-    └── Update k8s/deployment.yaml image → git commit [skip ci] → push
-```
-
-**The two broken steps (🚨):**
-
-```
-CI runs dvc repro against ephemeral SQLite MLflow
-                │
-                ▼
-Model trained, champion promoted in EPHEMERAL DB
-                │
-                ▼
-GitHub Actions runner job ENDS
-                │
-                ▼
-SQLite database DELETED FOREVER
-                │
-                ▼
-GKE MLflow (CloudSQL) = unchanged, old champion still @champion
-                │
-                ▼
-churn-api loads old model 
-```
-
-**CI is training a model that nobody will ever use.**
-
-The CI job builds a Docker image of the serving code (FastAPI app), updates the deployment, and triggers a rollout. When the new pods start, they load `@champion` from GKE MLflow — which was never updated by CI. The CI training run was completely disconnected from the serving layer.
-
-Additionally: every code push (even a README edit) triggers a full training run, wasting compute and time.
+This gap is what the annotation-bump mechanism closes (explained in Section 6).
 
 ---
 
-## 5. The Target Architecture
+## 4. The Full Deployment Chain — Step by Step
 
-### Two Flows, Two Triggers, Zero Coupling
+Here is exactly what happens when the auto-loop finds a better model. Every step, every actor, every decision.
 
 ```
-╔═══════════════════════════════════════════════════════════════════════════╗
-║  CODE FLOW (triggered by: src/ code change)                              ║
-║                                                                           ║
-║  git push                                                                 ║
-║    │                                                                      ║
-║    ▼                                                                      ║
-║  CI: lint → test (synthetic data, fast) → docker build → push image     ║
-║    │                                                                      ║
-║    ▼                                                                      ║
-║  k8s/deployment.yaml updated with new image SHA                          ║
-║    │                                                                      ║
-║    ▼                                                                      ║
-║  ArgoCD syncs → new pods with new code → load @champion from MLflow      ║
-╚═══════════════════════════════════════════════════════════════════════════╝
+STEP 1: Auto-loop controller (auto_loop.py) proposes an experiment
+═══════════════════════════════════════════════════════════════════
 
-╔═══════════════════════════════════════════════════════════════════════════╗
-║  MODEL FLOW (triggered by: auto-loop controller)                         ║
-║                                                                           ║
-║  Auto-loop controller (K8s Job, runs when you want to experiment)        ║
-║    │                                                                      ║
-║    │ 1. git clone repo, read current state                               ║
-║    │ 2. Claude API → propose ONE change to params.yaml / train.py        ║
-║    │ 3. Apply change                                                      ║
-║    │ 4. Submit KFP pipeline run via kfp.Client()                         ║
-║    │                                                                      ║
-║    ▼                                                                      ║
-║  KFP pipeline (containerized pods on GKE):                               ║
-║    Pod 1: preprocess → train.csv, test.csv                               ║
-║    Pod 2: train → model.pkl, run_id → logs to PRODUCTION MLflow          ║
-║    Pod 3: evaluate                                                        ║
-║              │                                                           ║
-║              ├── new AUC > @champion AUC?                                ║
-║              │                                                           ║
-║         YES  ▼                          NO                               ║
-║    set @champion alias in MLflow   set @challenger alias                 ║
-║    kubectl patch deployment        nothing deployed                      ║
-║    (annotation bump triggers       nothing committed                     ║
-║     ArgoCD rolling update)                                               ║
-║              │                                                           ║
-║    ▼ (back in controller)                                                ║
-║    5. Read metrics from production MLflow                                ║
-║    6. If improved: git commit changed files, git push                    ║
-║       If not: git checkout -- (revert, clean state)                     ║
-║    7. Log to MLflow "auto-experiment"                                    ║
-╚═══════════════════════════════════════════════════════════════════════════╝
+  auto_loop.py reads current code + history
+        │
+        ▼
+  Calls Claude API: "Propose ONE change to improve AUC-ROC"
+        │
+        ▼
+  Claude returns JSON:
+    { "experiment_name": "hist_gradient_boost",
+      "rationale": "HistGBM handles nulls natively...",
+      "params_yaml": "model_type: HistGradientBoostingClassifier" }
+        │
+        ▼
+  auto_loop.py writes the new params.yaml to disk
+  auto_loop.py records: champion_before = 2  (reads from MLflow API)
+
+
+STEP 2: KFP pipeline trains and evaluates the model
+════════════════════════════════════════════════════
+
+  auto_loop.py calls: kfp_client.create_run_from_pipeline_package(...)
+        │
+        ▼
+  KFP creates 3 pods on GKE (sequentially):
+
+  Pod 1: preprocess
+    → Reads raw CSV from GCS
+    → Cleans data, splits 80/20
+    → Writes train.csv and test.csv as KFP artifacts
+
+  Pod 2: train
+    → Reads train.csv
+    → Fits HistGradientBoostingClassifier (the proposed change)
+    → Logs params + model artifact to PRODUCTION MLflow (CloudSQL)
+    → Registers model as "churn-model" version 3
+    → Outputs: run_id (passed to evaluate step)
+
+  Pod 3: evaluate
+    → Reads test.csv + model artifact
+    → Computes AUC-ROC = 0.834
+    → Reads current @champion from MLflow → version 2, AUC = 0.816
+    → 0.834 > 0.816?  ──── YES ────────────────────────┐
+    │                                                    │
+    │  Calls MLflow API:                                 │
+    │  client.set_registered_model_alias(                │
+    │    "churn-model", "champion", "3")                 │
+    │                                                    │
+    │  @champion now points to version 3                 │
+    │  (But pods still serve v2! Nobody restarted them.) │
+    └────────────────────────────────────────────────────┘
+
+
+STEP 3: Auto-loop detects the promotion and triggers deployment
+═══════════════════════════════════════════════════════════════
+
+  auto_loop.py polls KFP: run status? → SUCCEEDED
+        │
+        ▼
+  Reads MLflow: champion_after = 3
+  Compares: champion_after (3) != champion_before (2)
+        │
+        ▼
+  ┌─────────────────────────────────────────────────────────┐
+  │  THIS IS THE KEY STEP                                   │
+  │                                                         │
+  │  auto_loop.py edits k8s/deployment.yaml:                │
+  │                                                         │
+  │  Before:                                                │
+  │    annotations:                                         │
+  │      mlflow/champion-version: "2"                       │
+  │                                                         │
+  │  After:                                                 │
+  │    annotations:                                         │
+  │      mlflow/champion-version: "3"                       │
+  │                                                         │
+  │  Then:                                                  │
+  │    git add k8s/deployment.yaml configs/params.yaml      │
+  │    git commit -m "auto-exp: hist_gradient_boost |       │
+  │                   AUC 0.816 → 0.834"                    │
+  │    git push origin main                                 │
+  └─────────────────────────────────────────────────────────┘
+
+
+STEP 4: ArgoCD detects the git change and deploys
+══════════════════════════════════════════════════
+
+  ArgoCD (always watching the main branch):
+        │
+        ▼
+  Detects: k8s/deployment.yaml changed on main
+  Compares cluster state vs git state:
+    Cluster: annotation "mlflow/champion-version" = "2"
+    Git:     annotation "mlflow/champion-version" = "3"
+        │
+        ▼
+  Applies the change to the cluster (kubectl apply)
+        │
+        ▼
+  Kubernetes sees: pod template changed (annotation is different)
+        │
+        ▼
+  Creates NEW ReplicaSet with new pods
+        │
+        ▼
+  New pods start → call mlflow.sklearn.load_model("models:/churn-model@champion")
+  @champion resolves to version 3 → downloads v3 model from GCS
+  Readiness probe passes → pod receives traffic
+        │
+        ▼
+  Old pods (serving v2) terminate gracefully
+        │
+        ▼
+  DONE. All traffic now served by v3.
 ```
 
-### What CI Should Do After the Fix
+---
+
+## 5. What Happens When an Experiment FAILS
+
+Two types of failure, both are safe:
+
+### Case A: Model is worse than champion
+
+```
+KFP evaluate step:
+  New model v3: AUC = 0.810
+  Current @champion v2: AUC = 0.816
+  0.810 < 0.816 → NOT BETTER
+        │
+        ▼
+  Sets @challenger alias to v3 (NOT @champion)
+  @champion STILL points to v2
+        │
+        ▼
+  Back in auto_loop.py:
+    champion_after = 2 (unchanged)
+    champion_before = 2 (unchanged)
+    2 == 2 → NO promotion happened
+        │
+        ▼
+  auto_loop.py does NOT edit deployment.yaml
+  auto_loop.py does NOT commit to git
+  auto_loop.py runs: git checkout -- configs/params.yaml src/train.py
+    (reverts Claude's proposed changes to a clean state)
+        │
+        ▼
+  ArgoCD: nothing changed in git → nothing to deploy
+  Pods: still serving v2, completely undisturbed
+  Bad model v3: exists in MLflow as @challenger (auditable) but never deployed
+```
+
+### Case B: Pipeline crashes (code error, OOM, timeout)
+
+```
+KFP run status: FAILED
+        │
+        ▼
+  auto_loop.py detects failure
+  auto_loop.py runs: git checkout -- configs/params.yaml src/train.py
+    (reverts Claude's proposed changes)
+  Logs "failed" to history.tsv and MLflow auto-experiment
+        │
+        ▼
+  @champion: unchanged
+  deployment.yaml: unchanged
+  ArgoCD: nothing to deploy
+  Pods: undisturbed
+```
+
+**Summary: bad experiments can NEVER trigger a deployment.** The deployment annotation only changes if the champion alias actually moved. The champion alias only moves if AUC improves. If AUC doesn't improve, nothing changes in git, so ArgoCD has nothing to deploy.
+
+---
+
+## 6. What Is an Annotation and Why Does It Cause a Restart?
+
+### Annotations in plain English
+
+Every Kubernetes object has metadata. Annotations are key-value pairs in that metadata — like sticky notes you can attach to any resource:
 
 ```yaml
-# Correct CI/CD pipeline after fix:
-
-jobs:
-  lint-and-test:
-    # Run on every push and PR
-    # Uses tiny synthetic dataset — no dvc pull, no training
-    steps:
-      - lint, format check
-      - pytest (fast smoke tests)
-
-  build-and-deploy:
-    # Runs ONLY when src/ or Dockerfile changed (not on docs/config changes)
-    # Never runs dvc repro. Never touches MLflow.
-    steps:
-      - docker buildx build --platform linux/amd64,linux/arm64
-      - docker push → ghcr.io
-      - Update k8s/deployment.yaml image SHA
-      - git push [skip ci]
-      → ArgoCD deploys new image
-```
-
----
-
-## 6. The Auto-Experiment Loop
-
-### What It Does
-
-Each iteration:
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                     Auto-loop Controller                        │
-│                                                                 │
-│  1. git pull (get latest code state)                           │
-│                                                                 │
-│  2. Read experiment history from MLflow + history.tsv           │
-│     "Tried HistGBM (improved), tried class_weight (reverted)"  │
-│                                                                 │
-│  3. Call Claude API with:                                       │
-│     - Current params.yaml / train.py / preprocess.py           │
-│     - Full experiment history                                   │
-│     - "Propose ONE change to improve AUC-ROC"                  │
-│                                                                 │
-│  4. Claude returns JSON:                                        │
-│     {                                                           │
-│       "experiment_name": "charges_per_month_feature",          │
-│       "rationale": "Add TotalCharges/(tenure+1)...",           │
-│       "params_yaml": "... new content ...",                     │
-│       "train_py": null  (not changed)                          │
-│     }                                                           │
-│                                                                 │
-│  5. Apply proposed changes to files                            │
-│  6. Run ruff --fix (lint Claude's code)                        │
-│                                                                 │
-│  7. ┌──────────────────────────────────┐                       │
-│     │  Submit KFP pipeline run         │                       │
-│     │  → KFP executes on GKE cluster   │                       │
-│     │  → controller waits (polls)      │                       │
-│     └──────────────────────────────────┘                       │
-│                                                                 │
-│  8. Read result from production MLflow                         │
-│     champion_before = v2 (auc=0.816)                           │
-│     champion_after  = v3 (auc=0.834) ← promoted!              │
-│                                                                 │
-│  9a. IMPROVED: git commit + push                               │
-│       "auto-exp: charges_per_month | AUC 0.816→0.834"         │
-│       → ArgoCD rolling update (pods load new champion)         │
-│                                                                 │
-│  9b. NOT IMPROVED:                                              │
-│       git checkout -- (revert params.yaml, train.py)           │
-│       nothing committed, clean state for next iteration        │
-│                                                                 │
-│  10. Log experiment to MLflow "auto-experiment" experiment     │
-│  11. Append to history.tsv in GCS                              │
-│  12. Repeat for N iterations                                    │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-**Why we revert code changes:** Claude's proposed change didn't improve the model. We don't want that change permanently applied — the next iteration should start from a clean codebase so Claude can try something different.
-
-### Why a Kubernetes Job, Not a Deployment
-
-```
-Deployment: "Keep this pod running forever. Restart if it crashes."
-            → For services that handle requests (churn-api, MLflow, ArgoCD)
-
-Job:        "Run this once. Do the work. Exit when done."
-            → For batch tasks with a defined end (the auto-loop: run 20 experiments, stop)
-
-CronJob:    "Create a Job on a schedule (e.g., every night at 2am)"
-            → For scheduled automation
-```
-
-The auto-loop runs N experiments and stops. That's a Job. You launch it when you want to run experiments:
-
-```bash
-kubectl apply -f k8s/auto-loop-job.yaml   # launch the loop
-kubectl logs -f job/auto-loop             # watch it work
-kubectl delete job auto-loop              # stop early if needed
-```
-
-For a demo: run it manually once or twice. For production: make it a CronJob to run nightly.
-
-A Deployment doesn't make sense here because it would restart the loop every time it finishes, running experiments forever even when you don't want it to.
-
-### Where the Files Come From in the Controller Pod
-
-```
-Controller pod starts:
-  1. git clone https://x-access-token:$GIT_TOKEN@github.com/.../repo.git
-     (PAT stored as K8s Secret)
-  
-  Working directory has:
-    configs/params.yaml     ← Claude can modify this
-    src/train.py            ← Claude can modify this
-    src/preprocess.py       ← Claude can modify this
-    pipelines/churn_pipeline.yaml  ← submitted to KFP unchanged
-    auto_experiment/history.tsv    ← experiment history
-
-  After each iteration:
-    git commit (if improved) + git push
-    git checkout -- . (if not improved)
-```
-
----
-
-## 7. The Deployment Gap — How Champion Promotion Triggers a Rollout
-
-This is the most technically subtle part of the architecture.
-
-### The Problem
-
-MLflow and Kubernetes don't talk to each other directly. When `@champion` changes in MLflow (a database event), the running pods don't know. They keep serving the old model.
-
-```
-MLflow registry:
-  @champion → v2 (auc=0.816)   → churn-api is serving this
-
-Evaluate step runs, promotes v3:
-  @champion → v3 (auc=0.834)   ← MLflow updated
-
-churn-api pods?   Still serving v2.
-                  They won't know until they restart.
-```
-
-### Why Not Just Poll MLflow from Inside the Pod?
-
-Technically possible — add a background thread to `api.py` that checks if `@champion` version changed every 60 seconds and reloads. But this is architecturally wrong for GitOps:
-
-- The pod changes its behavior without any record in Git
-- You cannot `git revert` to restore the previous model
-- Audit trail breaks: you don't know when the model changed or why
-- ArgoCD would fight with you: it doesn't know about the reload, state is inconsistent
-
-**Hot reload without restart is not a supported or recommended pattern in open-source MLflow serving** (GitHub issue #4039, open since 2021).
-
-### The Correct Pattern: Annotation Bump
-
-In Kubernetes, **any change to the pod template spec causes a rolling restart**. We exploit this by adding a metadata annotation that records the current champion version:
-
-```yaml
-# k8s/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: churn-api
+  annotations:                           # ← annotations on the Deployment itself
+    description: "Inference API"         #   (these do NOT cause pod restarts)
 spec:
   template:
     metadata:
-      annotations:
-        mlflow/champion-version: "2"           # ← this changing forces a rollout
-        mlflow/champion-promoted-at: "2026-04-04T10:30:00Z"
+      annotations:                       # ← annotations on the POD TEMPLATE
+        mlflow/champion-version: "2"     #   (changing THESE causes pod restarts!)
 ```
 
-When this annotation changes in Git:
+There are two places for annotations:
+1. **On the Deployment** — just metadata, changing it does nothing to pods
+2. **On the Pod Template** (inside `spec.template.metadata`) — changing this tells Kubernetes "the pod specification changed, create new pods"
+
+### Why changing a pod template annotation causes a restart
+
+Kubernetes Deployments work by managing ReplicaSets. A ReplicaSet is a "template" for pods. When you change ANYTHING in the pod template (image, env var, annotation, label), Kubernetes creates a **new ReplicaSet** with the new template and gradually shifts traffic from old pods to new pods. This is a rolling update.
 
 ```
-Git: annotation "mlflow/champion-version" = "3"
-Cluster: annotation "mlflow/champion-version" = "2"
-            │
-            ▼
-ArgoCD detects diff → applies change
-            │
-            ▼
-Kubernetes: pod template changed → creates new ReplicaSet
-            │
-            ▼
-New pods start → load "models:/churn-model@champion" → gets v3
-            │
-            ▼
-Old pods terminate (zero-downtime rolling update)
+Before (annotation = "2"):
+  ReplicaSet-A (template: annotation "2")
+    ├── Pod-1 (serving v2 model)
+    └── Pod-2 (serving v2 model)
+
+After git push changes annotation to "3":
+  ReplicaSet-A (template: annotation "2")    ← being scaled down
+    ├── Pod-1 (terminating)
+    └── Pod-2 (terminating)
+  ReplicaSet-B (template: annotation "3")    ← being scaled up
+    ├── Pod-3 (starting, loading v3 model)
+    └── Pod-4 (starting, loading v3 model)
 ```
 
-This is standard in the industry. KServe does it with `storageUri` in the `InferenceService` CRD. Seldon Core does it with `modelUri` in `SeldonDeployment`. We do it manually in `deployment.yaml`.
+The annotation itself is meaningless to Kubernetes — it doesn't read `"mlflow/champion-version"`. The restart happens because the pod template changed. The annotation is just a convenient way to force a pod template change without changing the image or any other functional setting.
 
-### Who Bumps the Annotation?
+### Why not just use `kubectl rollout restart`?
 
-The auto-loop controller, after confirming the KFP run promoted a new champion:
+Because that's an imperative command, not GitOps. ArgoCD treats git as the source of truth. If you run `kubectl rollout restart` directly:
+1. ArgoCD might detect "drift" and revert it
+2. There's no git record of when/why the restart happened
+3. You can't `git revert` a `kubectl` command
 
-```python
-# In auto_loop.py, after KFP run completes:
-if champion_after != champion_before:
-    # Update the annotation in deployment.yaml
-    update_deployment_annotation(
-        "k8s/deployment.yaml",
-        champion_version=champion_after,
-        promoted_at=datetime.utcnow().isoformat()
-    )
-    git_commit_and_push(
-        files=["configs/params.yaml", "k8s/deployment.yaml"],
-        message=f"auto-exp: v{champion_after} promoted | AUC {old:.4f}→{new:.4f}"
-    )
-    # ArgoCD sees k8s/deployment.yaml changed → rolling update → new pods load v{champion_after}
-```
-
-### Alternative: Direct kubectl patch (Skip Git)
-
-For immediacy, the KFP evaluate component can trigger the restart directly:
-
-```python
-# Inside pipelines/churn_pipeline.py evaluate component:
-from kubernetes import client, config
-config.load_incluster_config()  # running inside K8s
-apps = client.AppsV1Api()
-apps.patch_namespaced_deployment(
-    name="churn-api",
-    namespace="churn-serving",
-    body={"spec": {"template": {"metadata": {"annotations": {
-        "kubectl.kubernetes.io/restartedAt": datetime.utcnow().isoformat()
-    }}}}}
-)
-```
-
-This triggers a rollout immediately, without a Git commit. It's faster (seconds vs minutes for ArgoCD sync) but less pure from a GitOps perspective — the restart isn't recorded in Git. For a portfolio demo: acceptable. For strict GitOps: use the annotation bump in Git.
-
-**For this project: both are implemented.** KFP does the direct patch for immediate feedback. The controller also bumps the Git annotation for auditability.
+The annotation in git is auditable: you can `git log k8s/deployment.yaml` and see exactly when each champion was promoted, what the old champion was, and which experiment caused the change.
 
 ---
 
-## 8. The Two-Workload Split
+## 7. Who Does What — The Responsibility Map
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│  Workload 1: Auto-loop Controller (K8s Job)                         │
-│                                                                     │
-│  Purpose: Orchestrator / Brain                                      │
-│  Runtime: Short-lived (runs N experiments, exits)                   │
-│  Resources: Tiny (just Python, Claude API calls, git operations)    │
-│  Needs:                                                             │
-│    - ANTHROPIC_API_KEY (K8s Secret)                                │
-│    - GitHub PAT (K8s Secret) for git clone + push                  │
-│    - KFP API endpoint (env var, not a secret)                       │
-│    - RBAC: patch deployments in churn-serving (for annotation bump) │
-│                                                                     │
-│  What it does NOT do:                                               │
-│    × Train models                                                   │
-│    × Preprocess data                                                │
-│    × Write to MLflow directly                                       │
-└─────────────────────────────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────────────────────────────┐
-│  Workload 2: KFP Pipeline Pods (created by KFP on demand)           │
-│                                                                     │
-│  Purpose: Compute worker / Muscle                                   │
-│  Runtime: Ephemeral (created per step, deleted on completion)       │
-│  Resources: As needed per step (could request GPU for train step)   │
-│  Needs:                                                             │
-│    - GCS access (Workload Identity via kfp-sa)                     │
-│    - MLflow access (HTTP to mlflow.mlflow.svc.cluster.local:5000)  │
-│    - RBAC: patch deployments in churn-serving (for rollout restart) │
-│                                                                     │
-│  What it does NOT do:                                               │
-│    × Call Claude API                                                │
-│    × Read/write git                                                 │
-│    × Make scheduling decisions                                      │
-└─────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│                                                                          │
+│  Claude (LLM)          "The scientist"                                  │
+│  ─────────────                                                          │
+│  Proposes ONE code/config change per iteration.                         │
+│  Has no access to the cluster, MLflow, or Kubernetes.                   │
+│  Only produces a JSON with proposed file contents.                      │
+│                                                                          │
+│  auto_loop.py          "The lab manager"                                │
+│  ────────────                                                           │
+│  Applies Claude's proposal to files.                                    │
+│  Submits KFP pipeline runs.                                             │
+│  Waits for results.                                                     │
+│  Reads MLflow to check if champion changed.                             │
+│  Commits to git if champion was promoted.                               │
+│  Reverts files if experiment failed or didn't improve.                  │
+│  THIS is the component that connects everything.                        │
+│                                                                          │
+│  KFP Pipeline          "The lab equipment"                              │
+│  ────────────                                                           │
+│  Runs preprocess → train → evaluate as containers on GKE.              │
+│  Logs everything to production MLflow.                                  │
+│  The evaluate step moves the @champion alias IF the model is better.   │
+│  Does NOT trigger any deployment.                                       │
+│  Does NOT commit to git.                                                │
+│                                                                          │
+│  MLflow                "The lab notebook"                               │
+│  ──────                                                                 │
+│  Passive database. Stores runs, metrics, model versions, aliases.       │
+│  Does NOT send notifications.                                           │
+│  Does NOT trigger deployments.                                          │
+│  Does NOT know about Kubernetes.                                        │
+│  Just answers questions when asked: "What's the current @champion?"    │
+│                                                                          │
+│  ArgoCD                "The factory operator"                           │
+│  ──────                                                                 │
+│  Watches k8s/ directory in git.                                         │
+│  When deployment.yaml changes → applies to cluster → pods restart.     │
+│  Does NOT know about MLflow, models, or experiments.                    │
+│  Only knows: "git says X, cluster should match X."                      │
+│                                                                          │
+│  churn-api             "The waiter"                                     │
+│  ─────────                                                              │
+│  Loads @champion model from MLflow at startup.                          │
+│  Serves predictions via /predict endpoint.                              │
+│  Does NOT know about experiments, Git, or ArgoCD.                       │
+│  Only knows: "load @champion, serve requests."                          │
+│                                                                          │
+└──────────────────────────────────────────────────────────────────────────┘
 ```
-
-### Why Not One Workload?
-
-You could put everything in one container: LLM call + training + evaluation. But:
-
-1. **Resource mismatch**: The LLM call is I/O-bound (waiting for Claude API). Training is CPU-bound. Packing them into one pod means the compute allocation is wrong for both phases.
-
-2. **KFP's value is isolation**: Each step (preprocess, train, evaluate) runs in its own container. If training crashes, preprocess output is preserved. If you run 100 experiments, preprocess is cached (same data). This is KFP's core value proposition — you lose it if you run everything in one container.
-
-3. **Audibility**: KFP records every run, every step, every artifact in ML-Metadata. This gives you the "what ran when" audit trail. If the controller absorbs the training, you lose this.
-
-4. **Scalability**: KFP can schedule the train step on a GPU node and the preprocess step on a cheap CPU node. You can't do that with a single container.
-
-### Why Not Build the Entire Loop as One Big KFP Pipeline?
-
-KFP pipelines are **DAGs (Directed Acyclic Graphs)**. They cannot be recursive — a pipeline cannot submit itself. KFP also doesn't natively support "run this LLM call, then based on its output decide what to do" as a DAG pattern.
-
-The closest approximation would be a KFP pipeline with `dsl.Condition` and a fixed set of experiment configurations predefined at compile time. But the whole point of autoresearch is that Claude *adapts* based on what failed before. This is inherently sequential and stateful — not a DAG.
 
 ---
 
-## 9. What to Fix and in What Order
-
-### The Three Open Loops
+## 8. The Auto-Experiment Loop — Detailed Walkthrough
 
 ```
-Gap 1: Training writes to wrong MLflow
-────────────────────────────────────────
-Current: CI runs dvc repro against ephemeral SQLite → model discarded
-Fix:     Remove dvc repro from CI. Training only happens in KFP.
-
-Gap 2: Champion promotion doesn't trigger a pod restart
-─────────────────────────────────────────────────────────
-Current: MLflow @champion changes → pods serve old model forever
-Fix:     KFP evaluate step patches deployment (direct kubectl)
-         + controller bumps annotation in Git (audit trail)
-
-Gap 3: Auto-loop trains against local MLflow, not production
-────────────────────────────────────────────────────────────
-Current: auto_loop.py runs dvc repro locally, logs to local/port-forward MLflow
-Fix:     Controller submits KFP run, reads results from production MLflow
+auto_loop.py starts (K8s Job or local)
+      │
+      │ 1. git clone (gets latest code from GitHub)
+      │
+      │ 2. Read:
+      │    - configs/params.yaml (current hyperparameters)
+      │    - src/train.py (current model code)
+      │    - history.tsv (what was tried before, what worked, what didn't)
+      │    - MLflow: current @champion version + AUC
+      │
+      │ 3. Call Claude API:
+      │    System prompt: program.md (research directions, constraints)
+      │    User prompt: current code + history + "propose ONE change"
+      │
+      │    Claude returns: { "experiment_name": "...",
+      │                      "rationale": "...",
+      │                      "params_yaml": "... new content ..." }
+      │
+      │ 4. Apply change: write new params.yaml (or train.py) to disk
+      │    Record: champion_before = current @champion version
+      │
+      │ 5. Submit KFP pipeline run: kfp_client.create_run(...)
+      │    Wait for completion (poll every 30s)
+      │
+      │ 6. KFP pipeline runs on GKE:
+      │    preprocess → train → evaluate
+      │    evaluate decides: promote to @champion or not
+      │
+      │ 7. Read MLflow: champion_after = current @champion version
+      │
+      │ 8a. champion_after != champion_before → IMPROVED!
+      │     - Edit k8s/deployment.yaml annotation
+      │     - git commit: "auto-exp: <name> | AUC <old> → <new>"
+      │     - git push → ArgoCD syncs → pods restart → serve new model
+      │
+      │ 8b. champion_after == champion_before → NOT improved
+      │     - git checkout -- . (revert ALL changes, clean slate)
+      │     - Nothing committed, nothing deployed
+      │
+      │ 9. Log to MLflow "auto-experiment" experiment
+      │    Log to auto_experiment/history.tsv
+      │
+      │ 10. REPEAT (back to step 2) for N iterations
+      │
+      └─── EXIT when budget exhausted (N experiments or T hours)
 ```
 
-### Implementation Steps (in order)
+### Why we revert code on failure
 
-**Step 1: Remove dvc repro from CI** — 30 minutes
-Remove the "Start ephemeral MLflow" and "Run DVC pipeline" steps from `ci.yaml`. The `pipeline` job becomes: authenticate → dvc pull (for data freshness check) → docker build → push → update deployment.yaml.
+Claude proposed `HistGradientBoosting`. We tried it. AUC got worse. If we leave `params.yaml` with `model_type: HistGradientBoostingClassifier`, the NEXT iteration starts from a broken state. Claude might propose "add class_weight" on top of HistGBM, compounding the failure.
 
-**Step 2: Fix the race condition in churn_pipeline.py evaluate** — 30 minutes
-The KFP evaluate component currently uses `mlflow.search_runs(order_by=["start_time DESC"])` to find the latest run. This is a race condition. Fix: pass `run_id` as a named output from the train component to evaluate, same as `run_id.txt` in the DVC pipeline.
-
-**Step 3: Add kubectl patch to KFP evaluate component** — 2 hours
-After `client.set_registered_model_alias(..., "champion", ...)`, add Kubernetes Python client call to patch the deployment. Add RBAC (Role + RoleBinding) to allow KFP's service account to patch deployments in churn-serving.
-
-**Step 4: Move auto_loop to submit KFP runs** — 1 day
-Replace `run_pipeline()` (which calls `dvc repro`) with `kfp_client.create_run_from_pipeline_package(...)`. Wait for KFP run completion by polling `kfp_client.get_run(run_id)`. Read metrics from production MLflow after run completes.
-
-**Step 5: Package auto_loop as a K8s Job** — 1 day
-Write `k8s/auto-loop-job.yaml`. Store `ANTHROPIC_API_KEY` and GitHub PAT as K8s Secrets. Add `make kfp-auto-experiment` to run it.
+By reverting (`git checkout -- .`), the next iteration starts from the **last known good state** — the code that produced the current champion. Claude gets a clean starting point every time.
 
 ---
 
-## 10. Cost and Operations
+## 9. Two Flows, Two Triggers (Code vs Model)
 
-### Monthly Cost (24/7 running)
+There are two completely independent reasons a deployment might happen:
 
-| Component | $/month | Notes |
-|-----------|---------|-------|
-| GKE Autopilot compute | ~$110 | ~2 vCPU + ~6 GB RAM |
-| CloudSQL db-f1-micro | $7.70 | PostgreSQL, always on |
-| Load Balancer IPs (4) | $20 | $5/IP — stable across restarts |
-| Persistent Disks (KFP MySQL + MinIO) | $4 | 40 GB standard |
-| GCS storage | $1 | Artifacts + DVC data |
-| **Total** | **~$143** | |
+```
+FLOW 1: Code changed (developer pushes new src/ code)
+══════════════════════════════════════════════════════
 
-**$300 free credits ÷ $143/month ≈ 2.1 months running 24/7.**
+  git push (changes to src/api.py, Dockerfile, etc.)
+       │
+       ▼
+  CI: lint → test → docker build → push new image to ghcr.io
+       │
+       ▼
+  CI updates k8s/deployment.yaml: image SHA changed
+       │
+       ▼
+  ArgoCD: detects image SHA change → rolls out new pods
+       │
+       ▼
+  New pods (with new code) load SAME @champion model from MLflow
+  (model didn't change, only the serving code changed)
 
-GCP free trial expires after **90 days** regardless of remaining credits.
 
-### Sleep / Wake Cycle
+FLOW 2: Model improved (auto-loop found a better model)
+═══════════════════════════════════════════════════════
 
-When not demonstrating:
+  auto_loop.py experiment succeeds → @champion moves to v3
+       │
+       ▼
+  auto_loop.py updates annotation in k8s/deployment.yaml
+  git commit + push
+       │
+       ▼
+  ArgoCD: detects annotation change → rolls out new pods
+       │
+       ▼
+  New pods (with SAME code) load NEW @champion v3 from MLflow
+  (code didn't change, only the model changed)
+```
+
+**These flows never interfere with each other.** A code change doesn't affect which model is served (it's always `@champion`). A model change doesn't affect what code runs (it's the same Docker image).
+
+---
+
+## 10. DVC vs KFP — Why Both Exist
+
+```
+                  DVC                           KFP
+                  ───                           ───
+  Runs on:       Your laptop                    Kubernetes cluster
+  Good for:      Fast local iteration           Production training
+  Command:       make repro                     make kfp-run
+  Caching:       dvc.lock (hash-based)          KFP metadata (per-component)
+  Steps run:     As Python subprocesses         As separate containers (pods)
+  MLflow:        Via port-forward               Direct cluster DNS
+
+  Use DVC when:  You're developing locally, debugging code, testing changes
+  Use KFP when:  You're running real training for deployment, auto-experiments
+```
+
+DVC also versions data — `dvc push/pull` syncs large files (CSVs, model pickles) with GCS so any collaborator can reproduce your exact dataset.
+
+In the auto-experiment loop, **KFP is the runner, not DVC**. The auto-loop submits KFP pipeline runs. DVC is for local development only.
+
+---
+
+## 11. The Two-Workload Split (Controller + KFP Pods)
+
+```
+Workload 1: auto-loop controller              Workload 2: KFP pipeline pods
+──────────────────────────────                 ──────────────────────────────
+Type: K8s Job (run once, exit)                 Type: Ephemeral pods (created per step)
+Purpose: Brain (decisions)                     Purpose: Muscle (compute)
+Does: Claude API calls, git ops,              Does: Data processing, model training,
+      KFP submission, result checking                model evaluation, MLflow logging
+Needs: ANTHROPIC_API_KEY, GitHub PAT          Needs: GCS access, MLflow access
+Resources: Tiny (just API calls)              Resources: As needed (CPU, memory, GPU)
+```
+
+**Why not one workload?** The LLM call (Claude) and the training run (KFP) have different resource profiles. Claude calls are I/O-bound (waiting for API response). Training is CPU-bound. Bundling them wastes resources. Plus, KFP gives you per-step isolation, caching, and the pipeline visualization UI — which you lose if you run everything in one container.
+
+---
+
+## 12. Cost and Sleep/Wake
+
+### Monthly cost (24/7 running)
+
+| Component | $/month |
+|-----------|---------|
+| GKE Autopilot compute | ~$110 |
+| CloudSQL db-f1-micro | $8 |
+| Load Balancer IPs (4) | $20 |
+| PVCs + GCS | $5 |
+| **Total** | **~$143** |
+
+**$300 free credits / $143 = ~2 months running 24/7.**
+
+### Sleep to save money
 
 ```bash
-make cluster-sleep   # Scale all pods to 0. Cost drops to ~$25/month.
-                     # CloudSQL + LB IPs + PVCs still bill.
-
-make cluster-wake    # Scale back up. Same IPs (stable on GKE).
-                     # Wait ~3 min for pods to be ready.
-make gke-urls        # Print current IPs
+make cluster-sleep    # Scale all pods to 0. Cost drops to ~$25/month.
+make cluster-wake     # Scale back up. Same IPs. ~3 min.
 ```
 
-Cost while sleeping: **~$25/month → $300 lasts ~12 months in sleep mode.**
+---
+
+## 13. Known Limitations (Honest Assessment)
+
+| Item | Status | Detail |
+|------|--------|--------|
+| CI champion promotion | Fake | CI uses ephemeral MLflow; trained model is discarded |
+| Auto-loop on cluster | Local only | Runs on laptop, not as a K8s Job (yet) |
+| TLS / HTTPS | No | HTTP only, no domain, no cert-manager |
+| Single zone | Yes | asia-south1, no HA, free tier |
+| Hot model reload | No | Pods must restart to load new champion |
+| KFP evaluate race | Exists | Uses "latest run" search, should pass run_id |
 
 ---
 
-## 11. What Is Working vs What Is Not
-
-### Working ✅
-
-| What | Why it works |
-|------|-------------|
-| Prediction API (`/predict`, `/health`) | churn-api loads @champion from MLflow at startup |
-| MLflow UI + model registry | CloudSQL backend survives pod restarts |
-| ArgoCD UI (GitOps) | Watches k8s/ on main, auto-syncs |
-| KFP UI (pipeline visualization) | UI accessible, pipeline YAML can be uploaded |
-| Multi-arch Docker images | CI builds linux/amd64+arm64 via docker buildx |
-| Workload Identity (GCS + CloudSQL) | No credentials in cluster; OAuth via GKE metadata server |
-| HPA on churn-api (2-10 replicas) | Scales up on CPU load |
-| Auto-loop locally (`make auto-experiment`) | Works, but trains against local/port-forward MLflow |
-
-### Broken / Incomplete ❌
-
-| What | Why it's broken | How to fix |
-|------|----------------|-----------|
-| CI champion promotion | Ephemeral MLflow, throwaway DB | Remove dvc repro from CI |
-| Model promotion → pod restart | No trigger from MLflow to cluster | kubectl patch in KFP evaluate |
-| Auto-loop → KFP | Loop runs dvc repro, not KFP | Step 4 above |
-| KFP evaluate race condition | Uses "latest run" search | Pass run_id from train component |
-| Auto-loop on cluster | Local only, needs laptop running | Package as K8s Job |
-| TLS / HTTPS | HTTP only (no domain) | cert-manager + domain (out of scope) |
-
----
-
-## 12. Quick Reference
+## 14. Quick Reference
 
 ### Live URLs (wake cluster first with `make cluster-wake`)
 
 | Service | URL |
 |---------|-----|
 | Prediction API | `http://34.180.37.1/predict` |
-| MLflow UI | `http://34.180.20.197:5000` |
+| MLflow UI | `http://34.180.20.197:5000` (click "Model training" tab, not "GenAI") |
 | ArgoCD UI | `http://34.100.246.237` (admin / Y6p9-krPfkEhm4Sd) |
 | KFP UI | `http://34.93.2.209` |
 
@@ -737,27 +600,16 @@ curl -X POST http://34.180.37.1/predict \
 ### Common commands
 
 ```bash
-make gke-connect         # connect kubectl to GKE
-make gke-status          # pod health across all namespaces
-make gke-urls            # print live IPs
-make cluster-sleep       # scale to 0 (save money)
-make cluster-wake        # scale back up
-make bootstrap           # seed @champion in MLflow (after fresh deploy)
+make gke-connect              # connect kubectl to GKE
+make gke-status               # pod health across all namespaces
+make gke-urls                 # print live IPs
+make cluster-sleep            # scale to 0 (save money)
+make cluster-wake             # scale back up
+make bootstrap                # seed @champion in MLflow (after fresh deploy)
 make mlflow-kill && make mlflow  # port-forward MLflow to localhost:5000
-make repro               # run DVC pipeline locally (dev/debug)
-make auto-experiment-dry-run     # preview Claude's proposal without running
-make auto-experiment             # run 20 experiments locally
-make compile-kfp         # compile churn_pipeline.yaml
-make kfp-run             # submit compiled pipeline to KFP
-make test                # run 10 pytest tests
-```
-
-### Branch status
-
-Both feature branches (`feature/auto-experiment`, `feature/gke-production`) are already merged into `main`.
-
-```bash
-# Clean up local + remote branches:
-git branch -d feature/auto-experiment feature/gke-production
-git push origin --delete feature/auto-experiment feature/gke-production
+make repro                    # run DVC pipeline locally (dev/debug)
+make auto-experiment-dry-run  # preview Claude's proposal without running
+make auto-experiment          # run 20 experiments locally
+make kfp-run                  # submit compiled pipeline to KFP
+make test                     # run 10 pytest tests
 ```

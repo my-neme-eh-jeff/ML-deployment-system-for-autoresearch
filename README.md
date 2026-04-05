@@ -24,6 +24,44 @@ This project answers all of those by building two parallel pipeline paths (local
 <img width="3024" height="1720" alt="image" src="https://github.com/user-attachments/assets/8466e9ca-a601-4d24-8176-ce1fae7aa450" />
 
 
+## Demo Videos
+
+<!-- TODO: Record and link demo videos for each section -->
+
+### Full walkthrough
+<!-- Link: [Full Demo Video](https://www.youtube.com/watch?v=YOUR_LINK_HERE) -->
+
+### Part 1: Blank deployment serving predictions
+<!-- Show: cluster-wake → pods starting → health check → /predict working -->
+<!-- Link: -->
+
+### Part 2: Auto-research running live
+<!-- Show: auto_loop.py running → Claude proposing changes → KFP pipeline submitted → watching the run in KFP UI -->
+<!-- Link: -->
+
+### Part 3: Champion promoted and ArgoCD rollout
+<!-- Show: KFP evaluate step promoting @champion → auto-loop committing annotation bump → ArgoCD detecting the change → new pods rolling out → new model being served -->
+<!-- Link: -->
+
+### Part 4: Reviewing all experiments in MLflow
+<!-- Show: MLflow UI → churn-prediction experiment → comparing runs → model registry → champion alias → all the history of what was tried and what improved -->
+<!-- Link: -->
+
+### Demo script (what to show in order)
+
+1. **Start from zero**: `make cluster-wake` → show all 4 UIs loading (MLflow, ArgoCD, KFP, churn-api)
+2. **Show it's serving**: `curl http://34.180.37.1/predict` → `{"churn":1,"churn_probability":0.71}`
+3. **Show MLflow**: Experiments → churn-prediction → model v1 is @champion → show the metrics
+4. **Launch auto-research**: `make auto-experiment` (or submit 1 KFP run via `make kfp-run`)
+5. **Watch KFP UI**: `http://34.93.2.209` → show the pipeline DAG executing (preprocess → train → evaluate)
+6. **Show promotion**: MLflow → model registry → @champion moved from v1 to v2 (AUC improved)
+7. **Show ArgoCD rollout**: `http://34.100.246.237` → churn-api deployment → show new pods replacing old
+8. **Verify new model serving**: `curl http://34.180.37.1/health` → `model_loaded: true`
+9. **Show the history**: MLflow auto-experiment → all attempts, rationale, what was kept vs reverted
+10. **Scale down**: `make cluster-sleep` → show cost savings
+
+---
+
 ## Architecture
 
 ### End-to-end flow
@@ -118,6 +156,42 @@ This project answers all of those by building two parallel pipeline paths (local
       │
       └── Worse?   → set @challenger alias only → prod unchanged
                      (manual: make promote)
+```
+
+## Auto-Research: LLM-Driven Autonomous Model Improvement
+
+Inspired by [Karpathy's autoresearch](https://github.com/karpathy/autoresearch). An LLM (Claude) autonomously proposes, tests, and deploys model improvements — zero human in the loop.
+
+**How it works (one iteration):**
+
+```
+1. Claude reads: current code + params + experiment history
+2. Claude proposes: "Switch to HistGradientBoosting" (ONE change)
+3. KFP trains and evaluates the proposal on GKE
+4. If AUC improved → @champion promoted → git commit → ArgoCD deploys new model
+5. If AUC worse   → changes reverted → nothing deployed → try something else
+```
+
+**Who does what:**
+
+| Actor | Role | Does NOT do |
+|-------|------|-------------|
+| **Claude** (LLM) | Proposes code/config changes | Touch the cluster, MLflow, or git |
+| **auto_loop.py** | Applies proposals, submits KFP runs, commits to git | Train models or evaluate them |
+| **KFP Pipeline** | Runs preprocess→train→evaluate on GKE | Trigger deployments or commit to git |
+| **MLflow** | Stores runs, metrics, @champion alias | Send notifications or restart pods |
+| **ArgoCD** | Deploys what git says to the cluster | Know about models, experiments, or MLflow |
+
+**The deployment trigger**: When the auto-loop detects a new @champion, it edits an annotation in `k8s/deployment.yaml` and pushes to git. ArgoCD sees the git change and does a rolling update. Pods restart and load the new champion model. Failed experiments never change the annotation, so they are never deployed.
+
+See [EXPLANATION.md](EXPLANATION.md) for the full technical walkthrough with diagrams.
+
+```bash
+# Preview what Claude would propose (no pipeline run)
+make auto-experiment-dry-run
+
+# Run 20 experiments autonomously (needs ANTHROPIC_API_KEY in .env)
+make auto-experiment
 ```
 
 ## Model Registry and Promotion Flow
