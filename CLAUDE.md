@@ -252,12 +252,18 @@ Champion: `churn-model` v1 (alias `@champion` in cluster MLflow, re-bootstrapped
 - **ArgoCD fights manual kubectl apply**: ArgoCD auto-syncs every ~3 minutes. Any `kubectl apply` to k8s/ resources will be reverted unless the change is also committed to git. Always commit + push first, then optionally apply manually to skip the wait.
 - **MLflow 3.x --allowed-hosts + --gunicorn-opts are mutually exclusive**: Security middleware only works with uvicorn. If you add `--allowed-hosts`, remove `--gunicorn-opts` (uvicorn is the default and uses 1 worker by default).
 - **churn-api permission denied in ArgoCD UI**: Intermittent — happens when argocd-repo-server restarts. Refresh the page; it resolves on its own.
+- **KFP standalone on GKE Autopilot — 4 components disabled**: `cache-deployer-deployment` and `cache-server` fail GKE Warden's CSR-rejection rule (CSRs with `system:` prefix not allowed on Autopilot — structural incompatibility). `ml-pipeline-viewer-crd` and `ml-pipeline-visualizationserver` are visualization extras, unused. All four stay at `replicas: 0`; `cluster-wake` skips them.
+- **ArgoCD — 2 unused components disabled**: `argocd-applicationset-controller` (we don't use ApplicationSet CRs) and `argocd-notifications-controller` (no Slack/email integration). Stay at `replicas: 0`.
+- **KFP PVCs MUST be regional**: `minio-pvc` and `mysql-pv-claim` use `storageClassName: standard-rwo-regional`, 5Gi each. Zonal PD (the default `standard-rwo`) locks the disk to one zone — after cluster-sleep, Autopilot may bring new nodes up in a different zone, and zonal PVCs can't follow → `1 node(s) didn't match PersistentVolume's node affinity`. Regional PD replicates across 2 zones in the region. Keep PVCs at 5Gi (regional = 2× SSD quota usage; bigger blows the SSD cap — see below).
+- **GCP free-trial SSD cap**: 250 GB in `asia-south1`, **cannot be raised on free trial**. Current usage ~220 GB (2 Autopilot nodes × ~100 GB boot disks + 2× 5Gi regional PVCs replicated = 200 + 10 + 10). Adding a 3rd node fails because each new node needs another ~100 GB of SSD. Fit everything in 2 nodes by minimizing pod count; production fix would be GCS-backed minio + CloudSQL-backed KFP mysql to free PVC quota.
+- **MLflow image is unpinned and Always-pull**: `image: ghcr.io/mlflow/mlflow:latest`, `imagePullPolicy: Always`. Every pod restart can pull a schema-breaking newer version → CrashLoopBackOff with "Detected out-of-date database schema". Fix: run a one-shot Job (image `ghcr.io/mlflow/mlflow:latest`, sidecar `cloud-sql-proxy:2.11.4`, command `mlflow db upgrade postgresql://mlflow_user:$PASS@127.0.0.1:5432/mlflow_db`), then `kubectl rollout restart deployment/mlflow`. **TODO: pin the image tag in `k8s/mlflow.yaml`** so this doesn't auto-recur.
 
 ## Next session goals
 
-1. KFP on vind — install KFP standalone and submit a pipeline run
-2. Data validation stage (Pandera) in the DVC pipeline
-3. Phase 2 API improvements (model version in response, deeper health check)
-4. Scaling/transform experiments (log transform vs StandardScaler vs nothing)
-5. Set up Karpathy's auto research
-6. Video recording of end-to-end demo
+1. **Autoresearch as a Kubernetes Job** — current single-machine `make auto-experiment` lifted into an in-cluster Job (deploy-key SSH or PAT + GraphQL `createCommitOnBranch`, deploy as 5 small validatable PRs).
+2. **Dataset swap to IEEE-CIS Fraud Detection** — 590K rows × 433 features, AUC headroom 0.62 → 0.94 for the autoresearch trajectory.
+3. **Bad-baseline strategy** — start the autoresearch loop from `LogisticRegression(C=0.001)` with one feature so the trajectory is dramatic.
+4. **Long autoresearch run** — 50+ iterations on the new dataset, capture the AUC trajectory plot for the README.
+5. **Pin `mlflow:latest` to a specific tag** in `k8s/mlflow.yaml`.
+6. **Demo video** — end-to-end recording of the loop running on cloud.
+7. **Project rename** — likely from `customer_churn` to something more general about ML deployment for autoresearch.

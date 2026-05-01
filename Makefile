@@ -96,10 +96,27 @@ gke-connect:
 GCP_PROJECT := project-8018ed81-1dfe-470e-aad
 SQL_INSTANCE := churn-mlflow
 
+# Components permanently disabled on this cluster (Autopilot incompatibility or unused features):
+#   kubeflow/cache-deployer-deployment      — fails GKE Warden (CSR with system: prefix)
+#   kubeflow/cache-server                    — needs the webhook the cache-deployer never created
+#   kubeflow/ml-pipeline-viewer-crd          — visualization extra, not used
+#   kubeflow/ml-pipeline-visualizationserver — visualization extra, not used
+#   argocd/argocd-applicationset-controller  — ApplicationSet CRs not used in this project
+#   argocd/argocd-notifications-controller   — Slack/email notifications not used
+#
+# KFP wake-safety: minio-pvc and mysql-pv-claim use storageClassName: standard-rwo-regional
+# (replicates across 2 zones in asia-south1). Zonal PD locks the disk to one zone — Autopilot
+# may bring up nodes in a different zone after sleep, and zonal PVCs can't follow.
+
+ARGOCD_DEPLOYS := argocd-server argocd-repo-server argocd-redis argocd-dex-server
+KFP_DEPLOYS    := mysql minio ml-pipeline ml-pipeline-ui ml-pipeline-persistenceagent \
+                  ml-pipeline-scheduledworkflow workflow-controller \
+                  metadata-grpc-deployment metadata-writer metadata-envoy-deployment
+
 # Scale all workloads to 0 + stop CloudSQL to minimize compute billing.
 # Disables ArgoCD auto-sync first so it can't revert the scale-down.
 # Remaining: 4 LB forwarding rules (under 5/project free tier = $0), GCS, Artifact Registry,
-# CloudSQL storage (~few GB). Idle burn ≈ $0/day on the free-credit billing account.
+# CloudSQL storage (~few GB), 2 regional 5Gi PVCs (KFP). Idle burn ≈ $0/day.
 cluster-sleep:
 	@echo "Disabling ArgoCD auto-sync (so scale-down isn't reverted on next wake)..."
 	@kubectl patch applications.argoproj.io churn-api -n argocd --type=json \
@@ -122,6 +139,7 @@ cluster-sleep:
 	@echo "Wake up with: make cluster-wake"
 
 # Scale workloads back up + start CloudSQL after cluster-sleep.
+# Only scales the components we actually use — see the disabled list above.
 cluster-wake:
 	@echo "Starting CloudSQL instance $(SQL_INSTANCE)..."
 	@gcloud sql instances patch $(SQL_INSTANCE) --activation-policy=ALWAYS \
@@ -132,12 +150,14 @@ cluster-wake:
 		if [ "$$state" = "RUNNABLE" ]; then echo "  CloudSQL is RUNNABLE."; break; fi; \
 		echo "  state=$$state, retrying in 15s..."; sleep 15; \
 	done
-	@echo "Waking cluster..."
+	@echo "Waking mlflow + churn-api..."
 	@kubectl scale deployment --all -n mlflow --replicas=1 2>/dev/null || true
 	@kubectl scale deployment --all -n churn-serving --replicas=2 2>/dev/null || true
-	@kubectl scale deployment --all -n argocd --replicas=1 2>/dev/null || true
-	@kubectl scale statefulset --all -n argocd --replicas=1 2>/dev/null || true
-	@kubectl scale deployment --all -n kubeflow --replicas=1 2>/dev/null || true
+	@echo "Waking ArgoCD core..."
+	@for d in $(ARGOCD_DEPLOYS); do kubectl scale deployment $$d -n argocd --replicas=1 2>/dev/null || true; done
+	@kubectl scale statefulset argocd-application-controller -n argocd --replicas=1 2>/dev/null || true
+	@echo "Waking KFP core..."
+	@for d in $(KFP_DEPLOYS); do kubectl scale deployment $$d -n kubeflow --replicas=1 2>/dev/null || true; done
 	@echo "Re-enabling ArgoCD auto-sync..."
 	@kubectl patch applications.argoproj.io churn-api -n argocd --type merge \
 		-p '{"spec":{"syncPolicy":{"automated":{"prune":true,"selfHeal":true}}}}' 2>/dev/null || true
