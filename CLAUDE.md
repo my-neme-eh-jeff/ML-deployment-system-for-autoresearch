@@ -53,6 +53,7 @@ make demo-stop      # Kill all port-forwards
 ### GKE Deployment (production)
 
 **GCP Project:** `project-8018ed81-1dfe-470e-aad`  
+**Billing account:** `01411E-7B7536-664426` ($300 free trial credits)  
 **Cluster:** `mlops-cluster` — GKE Autopilot, `asia-south1`
 
 | Namespace | Service | Public URL |

@@ -1,5 +1,6 @@
 .PHONY: repro train serve clean mlflow mlflow-kill promote test lint compile-kfp \
-       argocd-ui argocd-password deploy-argocd deploy-mlflow k8s-status bootstrap demo demo-stop
+       argocd-ui argocd-password deploy-argocd deploy-mlflow k8s-status bootstrap demo demo-stop \
+       gke-connect cluster-sleep cluster-wake gke-status gke-urls kfp-run
 
 # ── Local development ──────────────────────────────────────────────
 
@@ -92,20 +93,45 @@ gke-connect:
 		--region=asia-south1 \
 		--project=project-8018ed81-1dfe-470e-aad
 
-# Scale down all workloads to 0 replicas to stop compute billing.
-# CloudSQL + Load Balancer IPs + PVCs still bill (~$25/month).
+GCP_PROJECT := project-8018ed81-1dfe-470e-aad
+SQL_INSTANCE := churn-mlflow
+
+# Scale all workloads to 0 + stop CloudSQL to minimize compute billing.
+# Disables ArgoCD auto-sync first so it can't revert the scale-down.
+# Remaining: 4 LB forwarding rules (under 5/project free tier = $0), GCS, Artifact Registry,
+# CloudSQL storage (~few GB). Idle burn ≈ $0/day on the free-credit billing account.
 cluster-sleep:
+	@echo "Disabling ArgoCD auto-sync (so scale-down isn't reverted on next wake)..."
+	@kubectl patch applications.argoproj.io churn-api -n argocd --type=json \
+		-p '[{"op":"remove","path":"/spec/syncPolicy/automated"}]' 2>/dev/null || true
 	@echo "Scaling all workloads to 0..."
 	@kubectl scale deployment --all -n mlflow --replicas=0 2>/dev/null || true
 	@kubectl scale deployment --all -n churn-serving --replicas=0 2>/dev/null || true
 	@kubectl scale deployment --all -n argocd --replicas=0 2>/dev/null || true
 	@kubectl scale statefulset --all -n argocd --replicas=0 2>/dev/null || true
 	@kubectl scale deployment --all -n kubeflow --replicas=0 2>/dev/null || true
-	@echo "Cluster sleeping. Still billing: CloudSQL + LB IPs + PVCs (~$$25/month)"
+	@echo "Stopping CloudSQL instance $(SQL_INSTANCE) (if not already stopped)..."
+	@state=$$(gcloud sql instances describe $(SQL_INSTANCE) --project=$(GCP_PROJECT) --format='value(state)' 2>/dev/null); \
+	if [ "$$state" = "STOPPED" ]; then \
+		echo "  CloudSQL already STOPPED — skipping."; \
+	else \
+		gcloud sql instances patch $(SQL_INSTANCE) --activation-policy=NEVER \
+			--project=$(GCP_PROJECT) --quiet 2>&1 | tail -2; \
+	fi
+	@echo "Cluster sleeping. CloudSQL stopped. Idle burn ≈ \$$0/day."
 	@echo "Wake up with: make cluster-wake"
 
-# Scale workloads back up after cluster-sleep.
+# Scale workloads back up + start CloudSQL after cluster-sleep.
 cluster-wake:
+	@echo "Starting CloudSQL instance $(SQL_INSTANCE)..."
+	@gcloud sql instances patch $(SQL_INSTANCE) --activation-policy=ALWAYS \
+		--project=$(GCP_PROJECT) --quiet 2>&1 | tail -2 || true
+	@echo "Waiting for CloudSQL to be RUNNABLE..."
+	@for i in 1 2 3 4 5 6 7 8 9 10 11 12; do \
+		state=$$(gcloud sql instances describe $(SQL_INSTANCE) --project=$(GCP_PROJECT) --format='value(state)' 2>/dev/null); \
+		if [ "$$state" = "RUNNABLE" ]; then echo "  CloudSQL is RUNNABLE."; break; fi; \
+		echo "  state=$$state, retrying in 15s..."; sleep 15; \
+	done
 	@echo "Waking cluster..."
 	@kubectl scale deployment --all -n mlflow --replicas=1 2>/dev/null || true
 	@kubectl scale deployment --all -n churn-serving --replicas=2 2>/dev/null || true
