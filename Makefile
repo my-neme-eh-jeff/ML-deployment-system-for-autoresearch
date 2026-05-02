@@ -209,14 +209,19 @@ autoresearch-submit:
 	sed "s/name: autoresearch-smoke/name: autoresearch-$$ts/" jobs/autoresearch-job.yaml | kubectl create -f - 2>&1
 	@echo "Watch with: make autoresearch-logs"
 
-# Submit a REAL autoresearch run (no --dry-run). Override AUTORESEARCH_N for more iters.
+# Submit a REAL autoresearch run (no --dry-run). Override iters + hours via env vars.
 # Each kept improvement → commit on auto/run-<pod-name> branch via GitHub App.
 # At end of run → one PR opened against main.
+#
+#   make autoresearch-run                                  # 1 iter, 2h budget
+#   make autoresearch-run AUTORESEARCH_N=5                 # 5 iters, 2h budget
+#   make autoresearch-run AUTORESEARCH_N=10 AUTORESEARCH_HOURS=4.0
 AUTORESEARCH_N ?= 1
+AUTORESEARCH_HOURS ?= 2.0
 autoresearch-run:
 	@ts=$$(date +%Y%m%d-%H%M%S); \
 	sed -e "s/name: autoresearch-smoke/name: autoresearch-real-$$ts/" \
-	    -e "s|# args: \[.*\]|args: [\"--n-experiments\", \"$(AUTORESEARCH_N)\"]|" \
+	    -e "s|# args: \[.*\]|args: [\"--n-experiments\", \"$(AUTORESEARCH_N)\", \"--hours\", \"$(AUTORESEARCH_HOURS)\"]|" \
 	    jobs/autoresearch-job.yaml | kubectl create -f - 2>&1
 	@echo "Watch with: make autoresearch-logs"
 
