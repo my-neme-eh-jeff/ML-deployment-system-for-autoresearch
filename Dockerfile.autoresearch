@@ -2,51 +2,35 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# git is needed by DVC's project-root detection (and by the throwaway-init in
-# scripts/run-autoresearch.sh). The "no-install-recommends" + clean keeps the
-# image lean (~10 MB for git).
+# git is needed by DVC for project-root detection.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends git ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
 RUN pip install --no-cache-dir uv
 
-# Dependencies — pre-install at build time so the writable container layer
-# stays small (GKE Autopilot ephemeral storage default is 1Gi).
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev
 
-# Source files the autoresearch loop needs at runtime.
-# auto_loop.py reads + writes to params.yaml / src/train.py / src/preprocess.py,
-# runs `dvc repro` (which needs dvc.yaml + .dvc/ + DVC pointers), reads metrics.json
-# after each pipeline run.
-#
-# Data files are NOT baked in — fetched at runtime via `dvc pull` against the GCS remote.
-# This keeps the image small and decouples it from the dataset.
 COPY auto_experiment/ auto_experiment/
 COPY src/ src/
 COPY configs/ configs/
 COPY pipelines/ pipelines/
 COPY .dvc/ .dvc/
-COPY dvc.yaml dvc.lock .dvcignore metrics.json ./
+COPY dvc.yaml dvc.lock .dvcignore ./
 COPY data/.gitignore data/churn_data.csv.dvc data/
 COPY data/processed/.gitignore data/processed/stats.json data/processed/
 
-# Compile the KFP pipeline at image build time so the autoresearch loop can
-# submit it directly without re-compiling per iteration.
+# Compile the KFP pipeline at build time so each iteration can submit directly.
 RUN /app/.venv/bin/python pipelines/churn_pipeline.py && \
     test -f pipelines/churn_pipeline.yaml
 
-# Entrypoint script — runs `dvc pull` then exec's into auto_loop.
 COPY scripts/run-autoresearch.sh /usr/local/bin/run-autoresearch
 RUN chmod +x /usr/local/bin/run-autoresearch
 
 ENV PYTHONUNBUFFERED=1
 ENV MLFLOW_TRACKING_URI=http://mlflow.mlflow.svc.cluster.local:5000
-# auto_loop.py reads this to skip the git working-tree-clean check —
-# the container starts from a fresh image so the tree is always clean.
 ENV IN_CLUSTER=true
 
 ENTRYPOINT ["/usr/local/bin/run-autoresearch"]
-# Default args — override via `args:` in the Job manifest.
 CMD ["--n-experiments", "1", "--dry-run"]

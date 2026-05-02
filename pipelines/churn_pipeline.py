@@ -1,24 +1,8 @@
-"""
-Kubeflow Pipelines version of the churn prediction pipeline.
+"""KFP pipeline that mirrors the DVC stages (preprocess → train → evaluate).
 
-Mirrors the DVC pipeline (preprocess → train → evaluate) but runs each stage
-as a containerized step on Kubernetes — each @component becomes a pod, visible
-in the KFP UI as a DAG node with logs and artifacts.
-
-Each component is a thin wrapper that shells out to the existing src/*.py.
-This means params.yaml is the single source of truth for hyperparameters /
-feature engineering; KFP and DVC paths run the same code.
-
-The autoresearch loop submits this pipeline once per iteration with the
-proposed params.yaml content as an inline string argument.
-
-Usage:
-    # Compile to YAML (CI does this automatically)
-    uv run python pipelines/churn_pipeline.py
-
-    # Submit one run to a running KFP instance
-    uv run python pipelines/churn_pipeline.py --run \\
-        --host http://34.93.2.209
+Each component shells out to the matching src/*.py so DVC and KFP run the same
+code. Compile with `uv run python pipelines/churn_pipeline.py`; add `--run` to
+submit one run to a KFP host (`--host http://...`).
 """
 
 import argparse
@@ -36,7 +20,6 @@ def preprocess(
     test_csv: dsl.Output[dsl.Dataset],
     stats: dsl.Output[dsl.Artifact],
 ):
-    """Run src/preprocess.py with the proposed params.yaml. Outputs flow to KFP artifacts."""
     import shutil
     import subprocess
     from pathlib import Path
@@ -45,7 +28,6 @@ def preprocess(
     (workdir / "configs").mkdir(parents=True, exist_ok=True)
     (workdir / "configs" / "params.yaml").write_text(params_yaml)
 
-    # src/preprocess.py reads data/churn_data.csv. Pull it from GCS via gcsfs.
     import pandas as pd
 
     raw = pd.read_csv(raw_data_gcs_path)
@@ -67,7 +49,6 @@ def train(
     model_artifact: dsl.Output[dsl.Model],
     run_id_artifact: dsl.Output[dsl.Artifact],
 ):
-    """Run src/train.py with the proposed params.yaml. Logs to MLflow + emits the run_id."""
     import os
     import shutil
     import subprocess
@@ -96,7 +77,7 @@ def evaluate(
     mlflow_tracking_uri: str,
     metrics: dsl.Output[dsl.Artifact],
 ) -> str:
-    """Run src/evaluate.py. Returns the MLflow run_id so callers can deref metrics."""
+    """Returns the MLflow run_id so callers can fetch metrics by id."""
     import os
     import shutil
     import subprocess
@@ -117,8 +98,6 @@ def evaluate(
 
     shutil.copy(workdir / "metrics.json", metrics.path)
 
-    # Return the MLflow run id so the autoresearch loop can fetch metrics by id
-    # (instead of having to read metrics.json from a local file).
     run_id = (workdir / "models" / "run_id.txt").read_text().strip()
     print(f"MLflow run_id: {run_id}")
     print(f"Metrics: {Path(metrics.path).read_text()}")
@@ -131,11 +110,7 @@ def churn_pipeline(
     raw_data_gcs_path: str = "gs://customer-churn-dvc-remote/raw/churn_data.csv",
     mlflow_tracking_uri: str = "http://mlflow.mlflow.svc.cluster.local:5000",
 ):
-    """The full preprocess → train → evaluate DAG.
-
-    `params_yaml` is the entire params.yaml content as a string. The autoresearch
-    loop passes its mutated params here so each KFP run uses the proposed change.
-    """
+    """Full preprocess → train → evaluate DAG. params_yaml is the entire file content."""
     preprocess_task = preprocess(
         params_yaml=params_yaml,
         raw_data_gcs_path=raw_data_gcs_path,

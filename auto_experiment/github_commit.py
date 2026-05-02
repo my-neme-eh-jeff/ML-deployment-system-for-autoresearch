@@ -1,12 +1,7 @@
-"""GitHub App authentication + GraphQL commits for the autoresearch loop.
+"""GitHub App auth + GraphQL `createCommitOnBranch` for the in-cluster loop.
 
-Why this module exists: the loop runs as a K8s Job and needs to push commits to
-GitHub without a deploy-key SSH or a long-lived PAT. Pattern:
-
-  PEM (in GCP Secret Manager) → JWT signed locally → 1-hour install token →
-  GraphQL createCommitOnBranch (atomic multi-file, verified-signed by GitHub).
-
-Industry standard (Devin, Sweep, Codegen, Copilot Coding Agent). See BRAINSTORM.md §6.
+PEM → JWT → 1-hour install token → atomic multi-file commit. The PEM lives in
+GCP Secret Manager and is fetched via Workload Identity at run time.
 """
 
 import base64
@@ -22,7 +17,6 @@ GITHUB_GRAPHQL = "https://api.github.com/graphql"
 
 
 def load_pem_from_secret_manager(project: str, secret: str) -> bytes:
-    """Fetch the App PEM from GCP Secret Manager via Workload Identity."""
     from google.cloud import secretmanager
 
     client = secretmanager.SecretManagerServiceClient()
@@ -31,7 +25,6 @@ def load_pem_from_secret_manager(project: str, secret: str) -> bytes:
 
 
 def mint_app_jwt(app_id: str, pem: bytes) -> str:
-    """Mint a 10-minute JWT signed with the App's private key."""
     now = int(time.time())
     payload = {"iat": now - 60, "exp": now + 600, "iss": str(app_id)}
     return pyjwt.encode(payload, pem, algorithm="RS256")
@@ -40,7 +33,6 @@ def mint_app_jwt(app_id: str, pem: bytes) -> str:
 def get_installation_token(
     app_id: str, installation_id: str, project: str, secret: str
 ) -> str:
-    """Exchange the App JWT for a 1-hour installation access token."""
     pem = load_pem_from_secret_manager(project, secret)
     app_jwt = mint_app_jwt(app_id, pem)
     r = requests.post(
@@ -56,12 +48,11 @@ def get_installation_token(
 
 
 def create_branch_from_main(token: str, owner: str, repo: str, branch: str) -> str:
-    """Create a new branch from the current main HEAD. Idempotent — returns the existing branch's SHA if it already exists."""
+    """Idempotent: returns the existing branch SHA if it already exists."""
     headers = {
         "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github+json",
     }
-    # Check if branch already exists
     r = requests.get(
         f"{GITHUB_API}/repos/{owner}/{repo}/git/ref/heads/{branch}",
         headers=headers,
@@ -69,7 +60,6 @@ def create_branch_from_main(token: str, owner: str, repo: str, branch: str) -> s
     )
     if r.status_code == 200:
         return r.json()["object"]["sha"]
-    # Create new branch from main
     r = requests.get(
         f"{GITHUB_API}/repos/{owner}/{repo}/git/ref/heads/main",
         headers=headers,
@@ -95,15 +85,11 @@ def commit_files_to_branch(
     message: str,
     files: list[tuple[str, bytes]],
 ) -> str:
-    """Atomic multi-file commit via GraphQL createCommitOnBranch.
-
-    `files` is a list of (relative_path, file_bytes). Returns the new commit OID.
-    """
+    """Atomic multi-file commit. `files`: list of (relative_path, bytes). Returns commit OID."""
     headers = {
         "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github+json",
     }
-    # Look up the branch's GraphQL node ID + current HEAD oid
     branch_q = """
     query($owner:String!, $repo:String!, $branch:String!) {
       repository(owner:$owner, name:$repo) {
@@ -170,7 +156,6 @@ def commit_files_to_branch(
 def open_pull_request(
     token: str, owner: str, repo: str, branch: str, title: str, body: str
 ) -> str:
-    """Open a PR from `branch` against main. Returns the PR URL."""
     r = requests.post(
         f"{GITHUB_API}/repos/{owner}/{repo}/pulls",
         headers={
@@ -185,7 +170,7 @@ def open_pull_request(
 
 
 def github_config_from_env() -> dict | None:
-    """Read GitHub App config from env vars. Returns None if not configured (e.g. local dev)."""
+    """Returns None if any of the 6 required env vars is missing (local dev)."""
     required = [
         "GITHUB_APP_ID",
         "GITHUB_INSTALLATION_ID",
@@ -209,7 +194,6 @@ def github_config_from_env() -> dict | None:
 def collect_changed_files(
     project_root: Path, proposal: dict, history_path: Path
 ) -> list[tuple[str, bytes]]:
-    """Read the files that should be committed for one autoresearch iteration."""
     files: list[tuple[str, bytes]] = []
     for field, rel_path in [
         ("params_yaml", "configs/params.yaml"),

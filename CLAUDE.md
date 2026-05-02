@@ -63,7 +63,7 @@ make demo-stop      # Kill all port-forwards
 | `kubeflow` | KFP UI | `http://34.93.2.209` |
 | `churn-serving` | churn-api (2 pods, HPA 2-10) | `http://34.180.37.1` |
 
-ArgoCD credentials: `admin` / `Y6p9-krPfkEhm4Sd`
+ArgoCD credentials: `admin` / `TMwwd4OpkcL6fPRy` (re-read with `kubectl get secret -n argocd argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d`)
 
 > **Note:** LoadBalancer IPs are stable on GKE (unlike the local vind setup). Run `make gke-status` to print live IPs.
 
@@ -141,6 +141,14 @@ data/churn_data.csv → preprocess → train.csv/test.csv → train → churn_mo
 - DVC remote: `gs://customer-churn-dvc-remote/dvc-store` (GCS)
 - MLflow artifacts: stored in cluster PVC at `/mlflow/artifacts/`, served via `--serve-artifacts`
 
+### Autoresearch loop (in-cluster Job → KFP submission)
+- Submit with `make autoresearch-run AUTORESEARCH_N=5 AUTORESEARCH_HOURS=2` — creates a unique-named K8s Job from `jobs/autoresearch-job.yaml`.
+- Per iteration: read state → call Claude API (Sonnet 4.6) → mutate `params.yaml` / `src/train.py` / `src/preprocess.py` → submit a KFP run → wait → read metrics from MLflow → if AUC improved, commit to a feature branch via GitHub App + GraphQL `createCommitOnBranch`. PR opened at the end with cost summary.
+- KFP host: `http://ml-pipeline.kubeflow.svc.cluster.local:8888` (in-cluster). UI at `http://34.93.2.209`.
+- GitHub App: `ML-deployment-for-autoresearch` (App ID `3576508`, install `128892452`). PEM stored in GCP Secret Manager as `github-app-key`. Workload Identity grants `secretmanager.secretAccessor` to `autoresearch-sa`.
+- Cost tracking: Anthropic `usage.input_tokens` / `output_tokens` are logged per iteration to MLflow's `auto-experiment` runs and to `auto_experiment/history.tsv`. PR body includes a totals summary.
+- Anthropic key: `kubectl create secret generic anthropic --from-env-file=.env -n churn-serving` (use `make autoresearch-secret`).
+
 ## File layout
 
 ```
@@ -202,12 +210,11 @@ Champion: `churn-model` v1 (alias `@champion` in cluster MLflow, re-bootstrapped
 - [x] vind cluster running (`churn-cluster`)
 
 ### TODO
-- [ ] KFP standalone on vind cluster — install and run the pipeline on Kubernetes
-- [ ] Data validation (Pandera or Great Expectations) — as a DVC stage
-- [ ] Run scaling/transform experiments (log transform vs StandardScaler vs nothing for tree models)
-- [ ] Phase 2 API improvements: model version in /predict response, deeper health check (run dummy prediction)
-- [ ] Local end-to-end demo run + video recording
-- [ ] Set up Karpathy's auto research
+- [ ] Swap dataset to IEEE-CIS Fraud Detection (590K × 433) for the autoresearch demo
+- [ ] Bad-baseline strategy (LogisticRegression + 1 feature) for a dramatic AUC trajectory
+- [ ] Long autoresearch run (50+ iters) on the new dataset, capture trajectory plot
+- [ ] Phase 2 API improvements: model version in /predict response, deeper health check
+- [ ] Demo video
 
 ### Explicitly out of scope
 - Evidently AI / data drift monitoring / auto-retraining
@@ -243,7 +250,7 @@ Champion: `churn-model` v1 (alias `@champion` in cluster MLflow, re-bootstrapped
 ## Known infra quirks
 
 - **vind cluster EOFs**: The vind cluster API server occasionally returns EOF/connection reset under load. Wait 10-15s and retry — it recovers on its own.
-- **kubectl port-forward + ArgoCD**: Never use port-forward for ArgoCD. Use the LoadBalancer IP (192.168.148.253) directly. Port-forward over TLS/gRPC drops connections.
+- **kubectl port-forward + ArgoCD**: Never use port-forward for ArgoCD. Use the LoadBalancer IP (`http://34.100.246.237`) directly — port-forward over TLS/gRPC drops connections.
 - **MLflow startup**: MLflow 3.x takes ~30-60s to become ready. readinessProbe has `failureThreshold: 10`. If pod is restarting, check memory — needs 2Gi limit.
 - **make demo**: Port-forwards MLflow (5000) and churn-api (8001). ArgoCD is accessed via LoadBalancer directly — no port-forward in demo.
 - **ghcr.io package visibility**: Must be set to Public in GitHub Packages settings. Do this via web UI — the REST API returns 404 for visibility changes on user packages.
@@ -256,7 +263,7 @@ Champion: `churn-model` v1 (alias `@champion` in cluster MLflow, re-bootstrapped
 - **ArgoCD — 2 unused components disabled**: `argocd-applicationset-controller` (we don't use ApplicationSet CRs) and `argocd-notifications-controller` (no Slack/email integration). Stay at `replicas: 0`.
 - **KFP PVCs MUST be regional**: `minio-pvc` and `mysql-pv-claim` use `storageClassName: standard-rwo-regional`, 5Gi each. Zonal PD (the default `standard-rwo`) locks the disk to one zone — after cluster-sleep, Autopilot may bring new nodes up in a different zone, and zonal PVCs can't follow → `1 node(s) didn't match PersistentVolume's node affinity`. Regional PD replicates across 2 zones in the region. Keep PVCs at 5Gi (regional = 2× SSD quota usage; bigger blows the SSD cap — see below).
 - **GCP free-trial SSD cap**: 250 GB in `asia-south1`, **cannot be raised on free trial**. Current usage ~220 GB (2 Autopilot nodes × ~100 GB boot disks + 2× 5Gi regional PVCs replicated = 200 + 10 + 10). Adding a 3rd node fails because each new node needs another ~100 GB of SSD. Fit everything in 2 nodes by minimizing pod count; production fix would be GCS-backed minio + CloudSQL-backed KFP mysql to free PVC quota.
-- **MLflow image is unpinned and Always-pull**: `image: ghcr.io/mlflow/mlflow:latest`, `imagePullPolicy: Always`. Every pod restart can pull a schema-breaking newer version → CrashLoopBackOff with "Detected out-of-date database schema". Fix: run a one-shot Job (image `ghcr.io/mlflow/mlflow:latest`, sidecar `cloud-sql-proxy:2.11.4`, command `mlflow db upgrade postgresql://mlflow_user:$PASS@127.0.0.1:5432/mlflow_db`), then `kubectl rollout restart deployment/mlflow`. **TODO: pin the image tag in `k8s/mlflow.yaml`** so this doesn't auto-recur.
+- **MLflow image pinned to `v3.11.1`**: `k8s/mlflow.yaml` pins `ghcr.io/mlflow/mlflow:v3.11.1` (matches the migrated DB schema). Default `imagePullPolicy` for non-`:latest` tags is `IfNotPresent`, so pod restarts won't auto-pull a newer schema. **If you bump this tag**, first run a one-shot Job (image `ghcr.io/mlflow/mlflow:NEW_TAG`, sidecar `gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.11.4`, command `mlflow db upgrade postgresql://mlflow_user:$PASS@127.0.0.1:5432/mlflow_db`), then `kubectl rollout restart deployment/mlflow`. (Historical: an unpinned `:latest` was the source of recurring "Detected out-of-date database schema" CrashLoopBackOff incidents.)
 
 ## Next session goals
 

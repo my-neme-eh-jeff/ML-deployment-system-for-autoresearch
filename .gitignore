@@ -33,3 +33,4 @@ BRAINSTORM.md
 .atlan/journal/.drafts/
 .atlan/cache/
 # <<< atlan-builders <<<
+.specstory/

@@ -96,11 +96,6 @@ def _build_classifier(params: dict):
 def build_pipeline(params: dict) -> Pipeline:
     numeric_features = list(NUMERIC_FEATURES)
 
-    # Optional feature engineering before the column transformer
-    # These are handled by adding a computed column to X before fitting,
-    # so we don't need to change the pipeline structure.
-    # The caller (train()) applies them to X directly.
-
     use_log = params.get("use_log_transform", False)
 
     if use_log:
@@ -138,8 +133,6 @@ def _apply_feature_engineering(X: pd.DataFrame, params: dict) -> pd.DataFrame:
 
     if params.get("add_charges_per_month", False):
         X["charges_per_month"] = X["TotalCharges"] / (X["tenure"] + 1)
-        # charges_per_month is numeric — add it to the numeric features used by the pipeline
-        # Note: build_pipeline uses module-level NUMERIC_FEATURES, so we patch locally
 
     return X
 
@@ -157,16 +150,13 @@ def train(
     X = df.drop(columns=[TARGET])
     y = df[TARGET]
 
-    # Apply feature engineering that adds new columns
     X = _apply_feature_engineering(X, params)
 
-    # If charges_per_month was added, include it in the pipeline's numeric features
     if (
         params.get("add_charges_per_month", False)
         and "charges_per_month" not in NUMERIC_FEATURES
     ):
         numeric_features_extended = NUMERIC_FEATURES + ["charges_per_month"]
-        # Rebuild preprocessor with extended numeric features
         use_log = params.get("use_log_transform", False)
         if use_log:
             numeric_transformer = Pipeline(
@@ -200,24 +190,20 @@ def train(
     mlflow.set_experiment("churn-prediction")
 
     with mlflow.start_run(run_name="train") as run:
-        # Log all params from params.yaml automatically — any new param Claude adds
-        # to params.yaml will be logged to MLflow without code changes.
         mlflow.log_params({k: v for k, v in params.items() if v is not None})
         mlflow.log_param("n_features", X.shape[1])
         mlflow.log_param("n_train_samples", X.shape[0])
 
         pipeline.fit(X, y)
 
-        # Save pickle for DVC pipeline compatibility
         Path(model_path).parent.mkdir(exist_ok=True)
         with open(model_path, "wb") as f:
             pickle.dump(pipeline, f)
 
-        # Persist run_id so evaluate.py uses exactly this run
+        # evaluate.py reads run_id.txt to log metrics on the exact training run.
         run_id_path = Path(model_path).parent / "run_id.txt"
         run_id_path.write_text(run.info.run_id)
 
-        # Log model to MLflow and register it
         mlflow.sklearn.log_model(
             pipeline,
             artifact_path="model",

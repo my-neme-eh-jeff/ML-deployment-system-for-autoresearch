@@ -375,17 +375,47 @@ kubectl rollout restart deployment/churn-api -n churn-serving
 
 If `mlflow ui` is already running on port 5000, `make mlflow` will silently bind to the wrong process — `make repro` writes to your local `mlflow.db` instead of the cluster. Always run `make mlflow-kill` first.
 
+## GitOps: Why ArgoCD (and Why Not Helm)
+
+This project uses **raw YAML manifests** + **ArgoCD** — no Helm charts, no Kustomize.
+
+**ArgoCD's only job**: make the cluster match what's in git. Every 3 minutes it compares the `k8s/` directory in git against the live cluster state. If they differ, it applies the git version. That's GitOps — git is the source of truth for what's deployed.
+
+```
+Without ArgoCD (manual):
+  CI updates k8s/deployment.yaml image tag → pushes to git → NOTHING HAPPENS
+  Someone must run: kubectl apply -f k8s/deployment.yaml
+  (Who? When? Did they forget? Did they apply the wrong file?)
+
+With ArgoCD (automated):
+  CI updates k8s/deployment.yaml image tag → pushes to git →
+  ArgoCD detects the change within 3 minutes → applies it → rolling update
+  (No human involved. Auditable via git log.)
+```
+
+**"But doesn't ArgoCD need Helm?"** No. ArgoCD reads YAML — it doesn't care where the YAML came from:
+
+| Source format | When to use it | Do we use it? |
+|---|---|---|
+| **Raw YAML** | Small apps, < 10 manifests, one environment | **Yes** — 4 files in `k8s/` |
+| **Helm charts** | Many environments (dev/staging/prod), complex templating | No — one cluster, one env |
+| **Kustomize** | Environment variants without Go templates | No — same reason |
+
+We have 4 YAML files and one environment. Helm would add `Chart.yaml`, `values.yaml`, `templates/`, and Go template syntax (`{{ .Values.foo }}`) everywhere — complexity for zero benefit. The `sed` command in CI that swaps the image tag is the one-line equivalent of what `helm upgrade --set image.tag=...` does.
+
+**When we'd add Helm**: if we needed a staging cluster alongside production, or 10+ services sharing configuration. At that point, templating pays for itself.
+
 ## Tools and Why
 
 | Tool | Role | Why |
 |------|------|-----|
 | **DVC** | Data/model versioning + local pipeline | Git-native, lightweight, hash-based caching |
-| **MLflow** | Experiment tracking + model registry | Industry standard, great UI, champion/challenger aliases |
-| **Kubeflow Pipelines** | K8s-native orchestration | Each step is a container, scales independently |
+| **MLflow** | Experiment tracking + model registry + artifact proxy | Industry standard, great UI, champion/challenger aliases. Serves 3 roles: database (CloudSQL), registry (@champion/@challenger aliases), and GCS proxy (--serve-artifacts) |
+| **Kubeflow Pipelines** | K8s-native training orchestration | Each step is a container/pod, scales independently, built-in DAG visualization |
 | **GKE Autopilot** | Managed Kubernetes | No node management, pay-per-pod, portfolio-grade |
-| **CloudSQL** | PostgreSQL for MLflow backend | Persistent, managed, survives pod restarts |
-| **GCS** | Cloud object storage | DVC data versioning + MLflow artifact store |
-| **ArgoCD** | GitOps deployment | Push to git = deploy to cluster |
-| **GitHub Actions** | CI/CD | Lint, test, run pipeline, build multi-arch images |
+| **CloudSQL** | PostgreSQL for MLflow backend | Persistent, managed, survives pod restarts unlike SQLite |
+| **GCS** | Cloud object storage | Two buckets: DVC data versioning + MLflow model artifacts |
+| **ArgoCD** | GitOps deployment | Continuously syncs cluster state to git — push = deploy |
+| **GitHub Actions** | CI/CD | Lint, test, build multi-arch images, push to ghcr.io |
 | **uv** | Python package management | Fast, replaces pip/poetry/pyenv |
 | **ruff** | Linting + formatting | Replaces flake8/black/isort, Rust-based |

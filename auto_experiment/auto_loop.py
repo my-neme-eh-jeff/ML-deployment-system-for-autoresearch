@@ -1,19 +1,4 @@
-"""
-AutoResearch-inspired experiment loop for customer churn model improvement.
-
-Inspired by: https://github.com/karpathy/autoresearch
-
-Loop per iteration:
-  1. Read current state (params.yaml, train.py, preprocess.py, metrics.json, history.tsv)
-  2. Call Claude API with research directions + history → get ONE proposed change
-  3. Apply changes (write full file contents)
-  4. Run ruff --fix (lint before commit so pre-commit hooks pass)
-  5. Run dvc repro (preprocess → train → evaluate)
-  6. Compare AUC-ROC: if improved by >= min_improvement → git commit
-  7. Otherwise → git checkout -- (surgical revert)
-  8. Log to MLflow auto-experiment + local history.tsv
-  9. Repeat
-"""
+"""LLM-driven experiment loop for the churn model."""
 
 import argparse
 import csv
@@ -25,14 +10,11 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-# PROJECT_ROOT must be defined before any third-party imports so that
-# load_dotenv() can find .env before anthropic/mlflow read os.environ.
+# Defined before third-party imports so load_dotenv runs before they read env.
 PROJECT_ROOT = Path(__file__).parent.parent
 
 from dotenv import load_dotenv  # noqa: E402
 
-# Load .env from project root — no need to export vars manually.
-# Variables already set in the environment take precedence over .env values.
 load_dotenv(PROJECT_ROOT / ".env")
 
 import anthropic  # noqa: E402
@@ -55,37 +37,26 @@ METRICS_PATH = PROJECT_ROOT / "metrics.json"
 
 
 def check_prerequisites():
-    """Fail fast with clear messages if the environment isn't ready."""
     import urllib.request
 
-    # 1. ANTHROPIC_API_KEY
     if not os.environ.get("ANTHROPIC_API_KEY"):
-        sys.exit(
-            "ERROR: ANTHROPIC_API_KEY is not set.\nExport it: export ANTHROPIC_API_KEY=sk-ant-..."
-        )
+        sys.exit("ERROR: ANTHROPIC_API_KEY is not set.")
 
-    # 2. MLflow reachable
     mlflow_uri = os.environ.get("MLFLOW_TRACKING_URI", "http://localhost:5000")
     try:
         urllib.request.urlopen(f"{mlflow_uri}/health", timeout=5)
-    except Exception:
-        sys.exit(
-            f"ERROR: MLflow not reachable at {mlflow_uri}\n"
-            "Run 'make mlflow-kill && make mlflow' in another terminal first."
-        )
+    except urllib.error.URLError as e:
+        sys.exit(f"ERROR: MLflow not reachable at {mlflow_uri}: {e}")
 
-    print("✓ ANTHROPIC_API_KEY set")
-    print(f"✓ MLflow reachable at {mlflow_uri}")
+    print(f"✓ ANTHROPIC_API_KEY set; MLflow reachable at {mlflow_uri}")
 
-    # 3. Git working tree clean for editable files — only when running locally.
-    # In-cluster (Dockerfile sets IN_CLUSTER=true) the container starts from a fresh
-    # image so the tree is always clean, and PROJECT_ROOT is not a git repo anyway.
+    # Skip the working-tree check in-cluster: the container is a fresh image
+    # and PROJECT_ROOT isn't a git repo there.
     if os.environ.get("IN_CLUSTER") == "true":
-        print("✓ Skipping working-tree check (IN_CLUSTER=true)")
         return
 
     result = subprocess.run(
-        ["git", "diff", "--name-only"] + EDITABLE_FILES,
+        ["git", "diff", "--name-only", *EDITABLE_FILES],
         capture_output=True,
         text=True,
         cwd=PROJECT_ROOT,
@@ -93,10 +64,8 @@ def check_prerequisites():
     if result.stdout.strip():
         sys.exit(
             f"ERROR: Working tree has uncommitted changes to editable files:\n"
-            f"{result.stdout.strip()}\n"
-            "Commit or stash them before running the loop."
+            f"{result.stdout.strip()}"
         )
-    print("✓ Working tree clean for editable files")
 
 
 # ── State collection ─────────────────────────────────────────────────────────
@@ -106,7 +75,9 @@ def read_file(rel_path: str) -> str:
     return (PROJECT_ROOT / rel_path).read_text()
 
 
-def read_metrics() -> dict:
+def read_metrics() -> dict | None:
+    if not METRICS_PATH.exists():
+        return None
     return json.loads(METRICS_PATH.read_text())
 
 
@@ -122,10 +93,12 @@ def read_history(n: int = 10) -> str:
 
 
 def collect_state(exp_num: int, best_auc: float) -> dict:
+    metrics = read_metrics()
+    current_auc = metrics["auc_roc"] if metrics else best_auc
     return {
         "exp_num": exp_num,
         "best_auc": best_auc,
-        "current_auc": read_metrics()["auc_roc"],
+        "current_auc": current_auc,
         "params_yaml": read_file("configs/params.yaml"),
         "train_py": read_file("src/train.py"),
         "preprocess_py": read_file("src/preprocess.py"),
@@ -135,6 +108,25 @@ def collect_state(exp_num: int, best_auc: float) -> dict:
 
 
 # ── Claude API call ──────────────────────────────────────────────────────────
+
+# USD per 1M tokens. Bump when Anthropic pricing changes.
+CLAUDE_PRICING = {
+    "claude-sonnet-4-6": {"input": 3.0, "output": 15.0},
+    "claude-opus-4-7": {"input": 15.0, "output": 75.0},
+    "claude-haiku-4-5": {"input": 1.0, "output": 5.0},
+}
+
+
+def estimate_cost_usd(model: str, input_tokens: int, output_tokens: int) -> float:
+    price = CLAUDE_PRICING.get(model)
+    if not price:
+        for known, p in CLAUDE_PRICING.items():
+            if model.startswith(known):
+                price = p
+                break
+    if not price:
+        return 0.0
+    return (input_tokens * price["input"] + output_tokens * price["output"]) / 1_000_000
 
 
 def call_claude(state: dict, model: str = "claude-sonnet-4-6") -> dict:
@@ -171,6 +163,8 @@ Current AUC-ROC in metrics.json: {state["current_auc"]:.4f}
 ## Task
 Propose ONE specific change to improve AUC-ROC. Choose something not yet tried or something that failed for a different reason than what you'd try now. Return ONLY the JSON object."""
 
+    total_in = 0
+    total_out = 0
     for attempt in range(3):
         try:
             response = client.messages.create(
@@ -179,14 +173,20 @@ Propose ONE specific change to improve AUC-ROC. Choose something not yet tried o
                 system=system_prompt,
                 messages=[{"role": "user", "content": user_prompt}],
             )
+            total_in += getattr(response.usage, "input_tokens", 0) or 0
+            total_out += getattr(response.usage, "output_tokens", 0) or 0
             text = response.content[0].text.strip()
-            # Strip markdown fences if Claude added them
             if text.startswith("```"):
                 text = text.split("```", 2)[-1] if text.count("```") >= 2 else text
                 text = text.removeprefix("json").strip()
                 if text.endswith("```"):
                     text = text[:-3].strip()
-            return json.loads(text)
+            return {
+                "proposal": json.loads(text),
+                "input_tokens": total_in,
+                "output_tokens": total_out,
+                "cost_usd": estimate_cost_usd(model, total_in, total_out),
+            }
         except json.JSONDecodeError as e:
             if attempt == 2:
                 raise RuntimeError(
@@ -200,7 +200,6 @@ Propose ONE specific change to improve AUC-ROC. Choose something not yet tried o
 
 
 def snapshot_files(proposal: dict) -> dict:
-    """Save in-memory copies of files that will be changed."""
     originals = {}
     for field, rel_path in [
         ("params_yaml", "configs/params.yaml"),
@@ -225,28 +224,16 @@ def apply_changes(proposal: dict):
 
 
 def revert_files(originals: dict):
-    """Restore files to their pre-experiment state."""
-    if originals:
-        # Use git checkout for a clean revert (handles any edge cases)
-        files = list(originals.keys())
-        subprocess.run(
-            ["git", "checkout", "--"] + files,
-            cwd=PROJECT_ROOT,
-            check=False,
-            capture_output=True,
-        )
-    else:
-        # Fallback: revert all editable files
-        subprocess.run(
-            ["git", "checkout", "--"] + EDITABLE_FILES,
-            cwd=PROJECT_ROOT,
-            check=False,
-            capture_output=True,
-        )
+    files = list(originals.keys()) if originals else EDITABLE_FILES
+    subprocess.run(
+        ["git", "checkout", "--", *files],
+        cwd=PROJECT_ROOT,
+        check=False,
+        capture_output=True,
+    )
 
 
 def ruff_fix(proposal: dict):
-    """Lint and format any changed Python files so pre-commit hooks pass."""
     py_files = []
     if proposal.get("train_py"):
         py_files.append("src/train.py")
@@ -270,7 +257,6 @@ def ruff_fix(proposal: dict):
 
 
 def run_pipeline_local_dvc(timeout: int = 180) -> dict:
-    """Local-laptop path — runs `dvc repro` in the working tree."""
     env = os.environ.copy()
     if "MLFLOW_TRACKING_URI" not in env:
         env["MLFLOW_TRACKING_URI"] = "http://localhost:5000"
@@ -316,12 +302,6 @@ def run_pipeline_local_dvc(timeout: int = 180) -> dict:
 
 
 def run_pipeline_kfp(timeout: int = 900) -> dict:
-    """In-cluster path — submits a KFP run, waits, reads metrics from MLflow.
-
-    Each iteration is a separate KFP run visible in the KFP UI as a DAG with
-    preprocess / train / evaluate nodes. Metrics are pulled from MLflow by the
-    run_id that the train step records (no metrics.json round-trip).
-    """
     from kfp.client import Client
 
     kfp_host = os.environ.get(
@@ -358,7 +338,7 @@ def run_pipeline_kfp(timeout: int = 900) -> dict:
         result = kfp.wait_for_run_completion(run.run_id, timeout=timeout)
     except Exception as e:
         return {"success": False, "auc": 0.0, "metrics": {}, "stderr": f"KFP wait: {e}"}
-    # kfp v2 returns the V2beta1Run directly; v1 wrapped it in .run. Be tolerant.
+    # kfp v2 returns the V2beta1Run directly; v1 wrapped it in `.run`.
     run_obj = getattr(result, "run", result)
     state = (
         getattr(run_obj, "state", None) or getattr(run_obj, "status", None) or "UNKNOWN"
@@ -371,8 +351,6 @@ def run_pipeline_kfp(timeout: int = 900) -> dict:
             "stderr": f"KFP run state={state}, id={run.run_id}",
         }
 
-    # Read the metrics from the latest MLflow run on the 'churn-prediction' experiment.
-    # train.py logs there with run_name == proposal experiment_name.
     try:
         mlflow.set_tracking_uri(os.environ["MLFLOW_TRACKING_URI"])
         runs = mlflow.search_runs(
@@ -409,7 +387,6 @@ def run_pipeline_kfp(timeout: int = 900) -> dict:
 
 
 def run_pipeline(timeout: int = 900) -> dict:
-    """Dispatch: in-cluster → KFP, laptop → local dvc repro."""
     if os.environ.get("IN_CLUSTER") == "true":
         return run_pipeline_kfp(timeout=timeout)
     return run_pipeline_local_dvc(timeout=timeout)
@@ -419,7 +396,6 @@ def run_pipeline(timeout: int = 900) -> dict:
 
 
 def commit_improvement_local_git(proposal: dict, old_auc: float, new_auc: float):
-    """Local-git commit path — used when running on a developer laptop."""
     name = proposal.get("experiment_name", "unnamed_experiment")
     changed = [
         f
@@ -448,7 +424,6 @@ def commit_improvement_github_app(
     branch: str,
     gh_config: dict,
 ) -> str:
-    """In-cluster commit path — pushes to a feature branch via GitHub App + GraphQL."""
     name = proposal.get("experiment_name", "unnamed_experiment")
     msg = f"auto-exp: {name} | AUC {old_auc:.4f} → {new_auc:.4f}"
     files = github_commit.collect_changed_files(PROJECT_ROOT, proposal, HISTORY_PATH)
@@ -471,7 +446,6 @@ def commit_improvement(
     branch: str | None = None,
     gh_config: dict | None = None,
 ):
-    """Dispatch to GitHub-App-based commit if configured, else local git."""
     if branch and gh_config:
         sha = commit_improvement_github_app(
             proposal, old_auc, new_auc, branch, gh_config
@@ -491,6 +465,7 @@ def log_to_mlflow(
     auc_before: float,
     improved: bool,
     error_msg: str = "",
+    usage: dict | None = None,
 ):
     mlflow_uri = os.environ.get("MLFLOW_TRACKING_URI", "http://localhost:5000")
     mlflow.set_tracking_uri(mlflow_uri)
@@ -518,7 +493,14 @@ def log_to_mlflow(
         mlflow.log_metric("auc_roc_after", auc_after)
         mlflow.log_metric("auc_roc_delta", auc_after - auc_before)
 
-        # Log attempted files as artifacts (even reverted ones — full audit trail)
+        if usage:
+            mlflow.log_metric("claude_input_tokens", usage.get("input_tokens", 0))
+            mlflow.log_metric("claude_output_tokens", usage.get("output_tokens", 0))
+            mlflow.log_metric("claude_cost_usd", usage.get("cost_usd", 0.0))
+            if usage.get("model"):
+                mlflow.set_tag("claude_model", usage["model"])
+
+        # Log every attempted file, even reverted ones, for the audit trail.
         if proposal.get("params_yaml"):
             mlflow.log_text(proposal["params_yaml"], "attempted/params.yaml")
         if proposal.get("train_py"):
@@ -526,7 +508,6 @@ def log_to_mlflow(
         if proposal.get("preprocess_py"):
             mlflow.log_text(proposal["preprocess_py"], "attempted/preprocess.py")
 
-        # Link to the actual training run if pipeline succeeded
         if pipeline_result["success"]:
             run_id_file = PROJECT_ROOT / "models" / "run_id.txt"
             if run_id_file.exists():
@@ -536,8 +517,6 @@ def log_to_mlflow(
             mlflow.set_tag("error", error_msg[:500])
 
         for metric_name, val in pipeline_result.get("metrics", {}).items():
-            # KFP path adds string keys like mlflow_run_id / kfp_run_id —
-            # those are tags, not metrics.
             if isinstance(val, (int, float)) and not isinstance(val, bool):
                 mlflow.log_metric(f"pipeline_{metric_name}", val)
             else:
@@ -548,8 +527,14 @@ def log_to_mlflow(
 
 
 def log_to_tsv(
-    exp_num: int, proposal: dict, pipeline_result: dict, auc_before: float, outcome: str
+    exp_num: int,
+    proposal: dict,
+    pipeline_result: dict,
+    auc_before: float,
+    outcome: str,
+    usage: dict | None = None,
 ):
+    usage = usage or {}
     row = {
         "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M"),
         "exp_num": exp_num,
@@ -559,6 +544,9 @@ def log_to_tsv(
         "auc_after": f"{pipeline_result['auc']:.4f}",
         "delta": f"{pipeline_result['auc'] - auc_before:+.4f}",
         "outcome": outcome,
+        "input_tokens": usage.get("input_tokens", 0),
+        "output_tokens": usage.get("output_tokens", 0),
+        "cost_usd": f"{usage.get('cost_usd', 0.0):.4f}",
         "rationale": proposal.get("rationale", "").replace("\n", " ")[:120],
     }
     headers = list(row.keys())
@@ -582,18 +570,19 @@ def run_loop(
 ):
     check_prerequisites()
 
-    # Load baseline from params.yaml
     with open(PROJECT_ROOT / "configs/params.yaml") as f:
         auto_cfg = yaml.safe_load(f).get("auto_experiment", {})
     baseline_auc = auto_cfg.get("baseline_auc", 0.8162)
-    if min_improvement == 0.001:  # use params.yaml value if not overridden
+    if min_improvement == 0.001:
         min_improvement = auto_cfg.get("min_improvement", 0.001)
 
-    best_auc = read_metrics()["auc_roc"]
+    metrics = read_metrics()
+    best_auc = metrics["auc_roc"] if metrics else baseline_auc
     start_time = time.time()
+    total_cost_usd = 0.0
+    total_input_tokens = 0
+    total_output_tokens = 0
 
-    # If GitHub App is configured (in-cluster run), create a feature branch up-front.
-    # Otherwise this is a local-laptop run and commits go to the local working tree.
     gh_config = github_commit.github_config_from_env() if not dry_run else None
     branch_name: str | None = None
     if gh_config:
@@ -616,8 +605,7 @@ def run_loop(
                 f"  ✓ branch ready at {gh_config['owner']}/{gh_config['repo']}@{branch_name}"
             )
         except Exception as e:
-            print(f"  ERROR creating branch: {e}")
-            print("  Continuing without GitHub commits (local-only run).")
+            print(f"  ERROR creating branch: {e} — falling back to local-only run.")
             branch_name = None
             gh_config = None
 
@@ -643,16 +631,31 @@ def run_loop(
 
         print(f"[{i}/{n_experiments}] Calling Claude ({claude_model})...")
         try:
-            proposal = call_claude(state, model=claude_model)
+            claude_result = call_claude(state, model=claude_model)
         except Exception as e:
             print(f"  ERROR calling Claude: {e}")
             continue
+
+        proposal = claude_result["proposal"]
+        usage = {
+            "input_tokens": claude_result["input_tokens"],
+            "output_tokens": claude_result["output_tokens"],
+            "cost_usd": claude_result["cost_usd"],
+            "model": claude_model,
+        }
+        total_input_tokens += usage["input_tokens"]
+        total_output_tokens += usage["output_tokens"]
+        total_cost_usd += usage["cost_usd"]
 
         print(
             f"[{i}/{n_experiments}] Proposal: {proposal.get('experiment_name', 'unnamed')}"
         )
         print(f"  Rationale: {proposal.get('rationale', '')[:200]}")
         print(f"  Change type: {proposal.get('change_type', 'unknown')}")
+        print(
+            f"  Tokens: in={usage['input_tokens']:,} out={usage['output_tokens']:,} "
+            f"cost≈${usage['cost_usd']:.4f}"
+        )
 
         if dry_run:
             print("\n  [DRY RUN] Would apply the following changes:")
@@ -665,16 +668,12 @@ def run_loop(
             print("\n  Skipping pipeline run (dry-run mode).")
             continue
 
-        # Apply changes
         originals = snapshot_files(proposal)
         apply_changes(proposal)
         ruff_fix(proposal)
 
-        # Run pipeline
-        print(f"[{i}/{n_experiments}] Running dvc repro...")
-        pipeline_result = run_pipeline(
-            timeout=900
-        )  # KFP runs need longer than dvc repro
+        print(f"[{i}/{n_experiments}] Running pipeline...")
+        pipeline_result = run_pipeline(timeout=900)
 
         if not pipeline_result["success"]:
             print(f"  PIPELINE FAILED: {pipeline_result['stderr'][:300]}")
@@ -686,8 +685,9 @@ def run_loop(
                 best_auc,
                 False,
                 error_msg=pipeline_result["stderr"][:300],
+                usage=usage,
             )
-            log_to_tsv(i, proposal, pipeline_result, best_auc, "failed")
+            log_to_tsv(i, proposal, pipeline_result, best_auc, "failed", usage=usage)
             continue
 
         new_auc = pipeline_result["auc"]
@@ -696,8 +696,8 @@ def run_loop(
 
         if improved:
             print(f"  ✓ IMPROVED: {best_auc:.4f} → {new_auc:.4f} (+{delta:.4f})")
-            # log_to_tsv must run BEFORE commit so history.tsv is included in the commit.
-            log_to_tsv(i, proposal, pipeline_result, best_auc, "improved")
+            # log_to_tsv must run before commit so history.tsv is in the commit.
+            log_to_tsv(i, proposal, pipeline_result, best_auc, "improved", usage=usage)
             try:
                 commit_improvement(
                     proposal, best_auc, new_auc, branch=branch_name, gh_config=gh_config
@@ -706,14 +706,14 @@ def run_loop(
                 print(f"  WARN: commit failed ({e}) — continuing loop")
             prev_best = best_auc
             best_auc = new_auc
-            log_to_mlflow(i, proposal, pipeline_result, prev_best, True)
+            log_to_mlflow(i, proposal, pipeline_result, prev_best, True, usage=usage)
         else:
             print(
                 f"  ✗ REVERTED: {new_auc:.4f} did not beat {best_auc:.4f} (delta={delta:+.4f})"
             )
             revert_files(originals)
-            log_to_mlflow(i, proposal, pipeline_result, best_auc, False)
-            log_to_tsv(i, proposal, pipeline_result, best_auc, "reverted")
+            log_to_mlflow(i, proposal, pipeline_result, best_auc, False, usage=usage)
+            log_to_tsv(i, proposal, pipeline_result, best_auc, "reverted", usage=usage)
 
     total_elapsed = time.time() - start_time
     print(f"\n{'=' * 60}")
@@ -721,8 +721,11 @@ def run_loop(
     print(
         f"Final best AUC: {best_auc:.4f} (started at {baseline_auc:.4f}, delta={best_auc - baseline_auc:+.4f})"
     )
+    print(
+        f"Claude usage: in={total_input_tokens:,} out={total_output_tokens:,} "
+        f"≈ ${total_cost_usd:.4f} ({claude_model})"
+    )
 
-    # If we ran in-cluster, open a PR summarizing the run.
     if branch_name and gh_config:
         try:
             token = github_commit.get_installation_token(
@@ -738,7 +741,10 @@ def run_loop(
                 f"- Wall-clock: {total_elapsed / 60:.1f} min\n"
                 f"- Baseline AUC: {baseline_auc:.4f}\n"
                 f"- Final AUC: {best_auc:.4f}\n"
-                f"- Delta: {best_auc - baseline_auc:+.4f}\n\n"
+                f"- Delta: {best_auc - baseline_auc:+.4f}\n"
+                f"- Claude model: `{claude_model}`\n"
+                f"- Tokens (in/out): {total_input_tokens:,} / {total_output_tokens:,}\n"
+                f"- Estimated cost: ${total_cost_usd:.4f}\n\n"
                 f"Generated by ML-deployment-for-autoresearch GitHub App.\n"
                 f"Review the per-iteration commits on `{branch_name}` before merging."
             )
@@ -755,9 +761,7 @@ def run_loop(
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="AutoResearch-inspired experiment loop for churn model"
-    )
+    parser = argparse.ArgumentParser(description="LLM-driven experiment loop")
     parser.add_argument(
         "--n-experiments", type=int, default=20, help="Max number of experiments to run"
     )

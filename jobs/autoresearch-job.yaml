@@ -1,17 +1,5 @@
 ---
-# Autoresearch Loop — runs as a Kubernetes Job inside the cluster.
-#
-# v1 (PR-1): smoke-test only — image runs the default CMD (import + env check) and exits 0.
-# v2 (PR-2): adds serviceAccountName + dvc pull + 1-iter dry-run.
-# v3 (PR-3): adds GitHub App auth Secret + GraphQL commit on a feature branch.
-#
-# Submit one run with:
-#   kubectl create -f k8s/autoresearch-job.yaml
-# Or, with a unique name per submission:
-#   sed "s/autoresearch-smoke/autoresearch-$(date +%Y%m%d-%H%M%S)/" k8s/autoresearch-job.yaml | kubectl create -f -
-#
-# Watch:
-#   kubectl logs -n churn-serving -l job-name=autoresearch-smoke -f
+# Autoresearch Job — submit with `make autoresearch-run` (which timestamps the name).
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -25,23 +13,20 @@ spec:
       labels:
         app: autoresearch
     spec:
-      serviceAccountName: autoresearch-sa  # WI-bound for dvc pull (and PR-3 secret access)
+      serviceAccountName: autoresearch-sa
       restartPolicy: Never
       containers:
         - name: loop
           image: ghcr.io/my-neme-eh-jeff/churn-autoresearch:latest
           imagePullPolicy: Always
-          # Default args (from Dockerfile CMD): --n-experiments 1 --dry-run
-          # Override here to run more iterations:
-          # args: ["--n-experiments", "5", "--hours", "1.0"]
+          # Override args to run more iterations, e.g. ["--n-experiments", "5"].
           env:
             - name: ANTHROPIC_API_KEY
               valueFrom:
                 secretKeyRef:
                   name: anthropic
                   key: ANTHROPIC_API_KEY
-            # GitHub App config — auto_loop reads this via github_config_from_env().
-            # All 6 env vars must be set for the App-commit path to activate.
+            # All 6 GitHub-App vars must be set for the GraphQL commit path.
             - name: GITHUB_APP_ID
               value: "3576508"
             - name: GITHUB_INSTALLATION_ID
@@ -54,7 +39,6 @@ spec:
               value: "project-8018ed81-1dfe-470e-aad"
             - name: GITHUB_PEM_SECRET
               value: "github-app-key"
-            # Use the pod name (timestamped) as the run ID — branch = auto/run-<pod>.
             - name: AUTORESEARCH_RUN_ID
               valueFrom:
                 fieldRef:

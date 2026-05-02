@@ -1,21 +1,6 @@
-# MLflow tracking server — GKE production version.
-#
-# Changes from local vind version:
-#   - SQLite + PVC replaced by CloudSQL PostgreSQL (managed, persistent, HA-ready)
-#   - Local PVC artifacts replaced by GCS bucket (durable, portable)
-#   - Cloud SQL Auth Proxy sidecar for secure DB connection via Workload Identity
-#   - serviceAccountName: mlflow-sa (Workload Identity → GCS + CloudSQL access)
-#   - Service type: LoadBalancer (public IP for UI access + CI/CD)
-#
-# Prerequisites:
-#   1. Run scripts/setup-gcp.sh to create CloudSQL instance, GCS bucket, service accounts
-#   2. kubectl apply -f k8s/serviceaccounts.yaml
-#   3. Create the cloudsql-password secret:
-#      kubectl create secret generic cloudsql-password \
-#        --from-literal=password=YOUR_SECURE_PASSWORD \
-#        -n mlflow
-#
-# Replace project-8018ed81-1dfe-470e-aad and CLOUDSQL_INSTANCE_CONNECTION with your values.
+# MLflow tracking server (GKE).
+# Backend: CloudSQL Postgres via cloud-sql-proxy sidecar; artifacts on GCS via Workload Identity.
+# Prereqs: cloudsql-password Secret in this namespace; mlflow-sa SA bound to GCP SA.
 
 apiVersion: v1
 kind: Namespace
@@ -39,15 +24,9 @@ spec:
     spec:
       serviceAccountName: mlflow-sa
       containers:
-        # ── Cloud SQL Auth Proxy sidecar ──────────────────────────────────
-        # Provides a local TCP connection to CloudSQL via Workload Identity.
-        # MLflow connects to 127.0.0.1:5432 — the proxy tunnels to CloudSQL.
         - name: cloud-sql-proxy
           image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.11.4
           args:
-            # Format: project-8018ed81-1dfe-470e-aad:REGION:INSTANCE_NAME
-            # Replace with your actual connection name from:
-            #   gcloud sql instances describe churn-mlflow --format="value(connectionName)"
             - "project-8018ed81-1dfe-470e-aad:asia-south1:churn-mlflow"
             - "--port=5432"
           securityContext:
@@ -61,27 +40,23 @@ spec:
               cpu: 100m
               memory: 128Mi
 
-        # ── MLflow server ─────────────────────────────────────────────────
-        # TODO (PR-4): pin this tag — :latest auto-pulled schema-breaking versions.
-        # ghcr.io/mlflow/mlflow only publishes :latest; switch to a digest pin
-        # (`@sha256:...`) or to docker.io/mlflow/mlflow which has versioned tags.
+        # MLflow 3.11.1, pinned to the exact digest currently running. The DB
+        # schema has been migrated against this image; tag-pinning (`:v3.11.1`
+        # or `:latest`) caused recurring CrashLoopBackOff when ghcr rebuilt the
+        # tag with a newer schema. To bump: run `mlflow db upgrade` (one-shot
+        # Job with cloud-sql-proxy sidecar), then update this digest.
         - name: mlflow
-          image: ghcr.io/mlflow/mlflow:latest
+          image: ghcr.io/mlflow/mlflow@sha256:c4cfc7eb77caf73c84b084d93456bc904500884a93b5348934ae42b351cc1263
           command: ["mlflow", "server"]
           args:
-            # PostgreSQL via Cloud SQL Proxy (localhost)
             - --backend-store-uri=postgresql://mlflow_user:$(CLOUDSQL_PASSWORD)@127.0.0.1:5432/mlflow_db
-            # GCS for artifacts — Workload Identity handles auth automatically
-            # Replace MLFLOW_ARTIFACTS_BUCKET with your bucket name
             - --artifacts-destination=gs://churn-mlflow-artifacts-project-8018ed81
             - --serve-artifacts
             - --host=0.0.0.0
             - --port=5000
-            # Disable MLflow's security middleware (CORS + DNS rebinding protection).
-            # Safe for this GKE internal deployment — access is controlled at the
-            # network layer (GKE LoadBalancer). Without this, the UI returns
-            # INTERNAL_ERROR on all API calls because MLflow 3.x blocks requests
-            # from its own IP as "cross-origin".
+            # MLflow 3.x's CORS/DNS-rebinding middleware returns INTERNAL_ERROR for
+            # requests originating from its own LoadBalancer IP. Disabled here because
+            # the LB is the only ingress.
             - --disable-security-middleware
           env:
             - name: CLOUDSQL_PASSWORD
@@ -119,9 +94,6 @@ metadata:
   name: mlflow
   namespace: mlflow
 spec:
-  # LoadBalancer gives a stable public IP for:
-  #   1. MLflow UI access
-  #   2. CI/CD connecting to the real MLflow (no more ephemeral instances)
   type: LoadBalancer
   selector:
     app: mlflow
