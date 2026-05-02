@@ -2,6 +2,13 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
+# git is needed by DVC's project-root detection (and by the throwaway-init in
+# scripts/run-autoresearch.sh). The "no-install-recommends" + clean keeps the
+# image lean (~10 MB for git).
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends git ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
 RUN pip install --no-cache-dir uv
 
 # Dependencies — pre-install at build time so the writable container layer

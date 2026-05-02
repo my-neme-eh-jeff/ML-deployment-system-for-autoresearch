@@ -39,6 +39,8 @@ import anthropic  # noqa: E402
 import mlflow  # noqa: E402
 import yaml  # noqa: E402
 
+from auto_experiment import github_commit  # noqa: E402
+
 EDITABLE_FILES = [
     "configs/params.yaml",
     "src/train.py",
@@ -318,9 +320,9 @@ def run_pipeline(timeout: int = 180) -> dict:
 # ── Git commit ────────────────────────────────────────────────────────────────
 
 
-def commit_improvement(proposal: dict, old_auc: float, new_auc: float):
+def commit_improvement_local_git(proposal: dict, old_auc: float, new_auc: float):
+    """Local-git commit path — used when running on a developer laptop."""
     name = proposal.get("experiment_name", "unnamed_experiment")
-    # Stage changed source files
     changed = [
         f
         for f in ["configs/params.yaml", "src/train.py", "src/preprocess.py"]
@@ -332,18 +334,53 @@ def commit_improvement(proposal: dict, old_auc: float, new_auc: float):
             }[f]
         )
     ]
-    # Also stage generated outputs
     generated = ["metrics.json", "dvc.lock"]
-
     to_stage = changed + [g for g in generated if (PROJECT_ROOT / g).exists()]
     subprocess.run(["git", "add"] + to_stage, cwd=PROJECT_ROOT, check=True)
-
     msg = f"auto-exp: {name} | AUC {old_auc:.4f} → {new_auc:.4f}"
     subprocess.run(
-        ["git", "commit", "-m", msg, "--no-verify"],
-        cwd=PROJECT_ROOT,
-        check=True,
+        ["git", "commit", "-m", msg, "--no-verify"], cwd=PROJECT_ROOT, check=True
     )
+
+
+def commit_improvement_github_app(
+    proposal: dict,
+    old_auc: float,
+    new_auc: float,
+    branch: str,
+    gh_config: dict,
+) -> str:
+    """In-cluster commit path — pushes to a feature branch via GitHub App + GraphQL."""
+    name = proposal.get("experiment_name", "unnamed_experiment")
+    msg = f"auto-exp: {name} | AUC {old_auc:.4f} → {new_auc:.4f}"
+    files = github_commit.collect_changed_files(PROJECT_ROOT, proposal, HISTORY_PATH)
+    token = github_commit.get_installation_token(
+        gh_config["app_id"],
+        gh_config["installation_id"],
+        gh_config["project"],
+        gh_config["secret"],
+    )
+    sha = github_commit.commit_files_to_branch(
+        token, gh_config["owner"], gh_config["repo"], branch, msg, files
+    )
+    return sha
+
+
+def commit_improvement(
+    proposal: dict,
+    old_auc: float,
+    new_auc: float,
+    branch: str | None = None,
+    gh_config: dict | None = None,
+):
+    """Dispatch to GitHub-App-based commit if configured, else local git."""
+    if branch and gh_config:
+        sha = commit_improvement_github_app(
+            proposal, old_auc, new_auc, branch, gh_config
+        )
+        print(f"  ↑ committed {sha[:8]} to branch {branch} via GitHub App")
+    else:
+        commit_improvement_local_git(proposal, old_auc, new_auc)
 
 
 # ── MLflow logging ────────────────────────────────────────────────────────────
@@ -452,12 +489,44 @@ def run_loop(
     best_auc = read_metrics()["auc_roc"]
     start_time = time.time()
 
+    # If GitHub App is configured (in-cluster run), create a feature branch up-front.
+    # Otherwise this is a local-laptop run and commits go to the local working tree.
+    gh_config = github_commit.github_config_from_env() if not dry_run else None
+    branch_name: str | None = None
+    if gh_config:
+        run_id = os.environ.get("AUTORESEARCH_RUN_ID") or datetime.now(
+            timezone.utc
+        ).strftime("%Y%m%d-%H%M%S")
+        branch_name = f"auto/run-{run_id}"
+        print(f"GitHub App configured. Creating feature branch: {branch_name}")
+        try:
+            token = github_commit.get_installation_token(
+                gh_config["app_id"],
+                gh_config["installation_id"],
+                gh_config["project"],
+                gh_config["secret"],
+            )
+            github_commit.create_branch_from_main(
+                token, gh_config["owner"], gh_config["repo"], branch_name
+            )
+            print(
+                f"  ✓ branch ready at {gh_config['owner']}/{gh_config['repo']}@{branch_name}"
+            )
+        except Exception as e:
+            print(f"  ERROR creating branch: {e}")
+            print("  Continuing without GitHub commits (local-only run).")
+            branch_name = None
+            gh_config = None
+
     print(f"\n{'=' * 60}")
     print(f"AutoResearch Loop — {n_experiments} experiments, {hours}h budget")
     print(f"Baseline AUC: {baseline_auc:.4f} | Current best: {best_auc:.4f}")
     print(f"Min improvement threshold: {min_improvement}")
     print(f"Claude model: {claude_model}")
     print(f"Dry run: {dry_run}")
+    print(
+        f"Commit target: {'GitHub branch ' + branch_name if branch_name else 'local git'}"
+    )
     print(f"{'=' * 60}\n")
 
     for i in range(1, n_experiments + 1):
@@ -522,11 +591,17 @@ def run_loop(
 
         if improved:
             print(f"  ✓ IMPROVED: {best_auc:.4f} → {new_auc:.4f} (+{delta:.4f})")
-            commit_improvement(proposal, best_auc, new_auc)
+            # log_to_tsv must run BEFORE commit so history.tsv is included in the commit.
+            log_to_tsv(i, proposal, pipeline_result, best_auc, "improved")
+            try:
+                commit_improvement(
+                    proposal, best_auc, new_auc, branch=branch_name, gh_config=gh_config
+                )
+            except Exception as e:
+                print(f"  WARN: commit failed ({e}) — continuing loop")
             prev_best = best_auc
             best_auc = new_auc
             log_to_mlflow(i, proposal, pipeline_result, prev_best, True)
-            log_to_tsv(i, proposal, pipeline_result, prev_best, "improved")
         else:
             print(
                 f"  ✗ REVERTED: {new_auc:.4f} did not beat {best_auc:.4f} (delta={delta:+.4f})"
@@ -541,6 +616,34 @@ def run_loop(
     print(
         f"Final best AUC: {best_auc:.4f} (started at {baseline_auc:.4f}, delta={best_auc - baseline_auc:+.4f})"
     )
+
+    # If we ran in-cluster, open a PR summarizing the run.
+    if branch_name and gh_config:
+        try:
+            token = github_commit.get_installation_token(
+                gh_config["app_id"],
+                gh_config["installation_id"],
+                gh_config["project"],
+                gh_config["secret"],
+            )
+            title = f"auto-exp run {branch_name.split('/')[-1]} — AUC {baseline_auc:.4f} → {best_auc:.4f}"
+            body = (
+                f"Autoresearch run summary\n\n"
+                f"- Iterations: {i}\n"
+                f"- Wall-clock: {total_elapsed / 60:.1f} min\n"
+                f"- Baseline AUC: {baseline_auc:.4f}\n"
+                f"- Final AUC: {best_auc:.4f}\n"
+                f"- Delta: {best_auc - baseline_auc:+.4f}\n\n"
+                f"Generated by ML-deployment-for-autoresearch GitHub App.\n"
+                f"Review the per-iteration commits on `{branch_name}` before merging."
+            )
+            url = github_commit.open_pull_request(
+                token, gh_config["owner"], gh_config["repo"], branch_name, title, body
+            )
+            print(f"PR opened: {url}")
+        except Exception as e:
+            print(f"WARN: failed to open PR: {e}")
+
     print(f"{'=' * 60}")
 
 
