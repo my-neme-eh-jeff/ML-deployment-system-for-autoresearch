@@ -62,6 +62,9 @@ spec:
               memory: 128Mi
 
         # ── MLflow server ─────────────────────────────────────────────────
+        # TODO (PR-4): pin this tag — :latest auto-pulled schema-breaking versions.
+        # ghcr.io/mlflow/mlflow only publishes :latest; switch to a digest pin
+        # (`@sha256:...`) or to docker.io/mlflow/mlflow which has versioned tags.
         - name: mlflow
           image: ghcr.io/mlflow/mlflow:latest
           command: ["mlflow", "server"]

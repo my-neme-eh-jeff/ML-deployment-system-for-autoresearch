@@ -27,7 +27,7 @@ COPY auto_experiment/ auto_experiment/
 COPY src/ src/
 COPY configs/ configs/
 COPY .dvc/ .dvc/
-COPY dvc.yaml dvc.lock .dvcignore ./
+COPY dvc.yaml dvc.lock .dvcignore metrics.json ./
 COPY data/.gitignore data/churn_data.csv.dvc data/
 COPY data/processed/.gitignore data/processed/stats.json data/processed/
 
