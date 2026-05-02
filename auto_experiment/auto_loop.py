@@ -358,7 +358,11 @@ def run_pipeline_kfp(timeout: int = 900) -> dict:
         result = kfp.wait_for_run_completion(run.run_id, timeout=timeout)
     except Exception as e:
         return {"success": False, "auc": 0.0, "metrics": {}, "stderr": f"KFP wait: {e}"}
-    state = getattr(result.run, "state", None) or getattr(result.run, "status", None)
+    # kfp v2 returns the V2beta1Run directly; v1 wrapped it in .run. Be tolerant.
+    run_obj = getattr(result, "run", result)
+    state = (
+        getattr(run_obj, "state", None) or getattr(run_obj, "status", None) or "UNKNOWN"
+    )
     if str(state).upper() not in ("SUCCEEDED", "COMPLETE"):
         return {
             "success": False,
@@ -663,7 +667,9 @@ def run_loop(
 
         # Run pipeline
         print(f"[{i}/{n_experiments}] Running dvc repro...")
-        pipeline_result = run_pipeline(timeout=300)
+        pipeline_result = run_pipeline(
+            timeout=900
+        )  # KFP runs need longer than dvc repro
 
         if not pipeline_result["success"]:
             print(f"  PIPELINE FAILED: {pipeline_result['stderr'][:300]}")
