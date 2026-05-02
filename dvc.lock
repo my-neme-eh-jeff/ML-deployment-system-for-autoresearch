@@ -38,22 +38,32 @@ stages:
       size: 708275
     - path: src/train.py
       hash: md5
-      md5: 24a854b3b7fdf3319e6a4e273ef013e9
-      size: 3031
+      md5: 382e656230904787e2598e2d76658142
+      size: 7334
     params:
       configs/params.yaml:
         train:
-          n_estimators: 100
+          model_type: HistGradientBoostingClassifier
           random_state: 42
-          model_type: RandomForestClassifier
+          n_estimators: 100
+          max_depth:
+          min_samples_split: 2
+          min_samples_leaf: 1
+          max_features: sqrt
+          class_weight:
+          bootstrap: true
+          learning_rate: 0.1
+          subsample: 1.0
+          use_log_transform: false
+          add_charges_per_month: false
     outs:
     - path: models/churn_model.pkl
       hash: md5
-      md5: d0b8133f339324d78a09e0d7b50af7a4
-      size: 19485748
+      md5: f94f94a9d75324c21e69caa85bc31e4d
+      size: 368283
     - path: models/run_id.txt
       hash: md5
-      md5: 978879f939d477247656beb656858c54
+      md5: f9d38c372cf8bf36ce16120207c8ae3b
       size: 32
   evaluate:
     cmd: uv run python src/evaluate.py
@@ -64,11 +74,11 @@ stages:
       size: 177544
     - path: models/churn_model.pkl
       hash: md5
-      md5: d0b8133f339324d78a09e0d7b50af7a4
-      size: 19485748
+      md5: f94f94a9d75324c21e69caa85bc31e4d
+      size: 368283
     - path: models/run_id.txt
       hash: md5
-      md5: 978879f939d477247656beb656858c54
+      md5: f9d38c372cf8bf36ce16120207c8ae3b
       size: 32
     - path: src/evaluate.py
       hash: md5
@@ -82,5 +92,5 @@ stages:
     outs:
     - path: metrics.json
       hash: md5
-      md5: b4f5747c7c9fe5da74747cee30ac76fd
+      md5: 9541f3f754c21fd7c1fe3f0ed6ee9123
       size: 104

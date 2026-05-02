@@ -4,7 +4,7 @@ preprocess:
 
 train:
   # Core estimator — Claude can swap this
-  model_type: RandomForestClassifier  # RandomForestClassifier | GradientBoostingClassifier | HistGradientBoostingClassifier | ExtraTreesClassifier
+  model_type: HistGradientBoostingClassifier  # RandomForestClassifier | GradientBoostingClassifier | HistGradientBoostingClassifier | ExtraTreesClassifier
   random_state: 42
 
   # RandomForest / ExtraTrees knobs
