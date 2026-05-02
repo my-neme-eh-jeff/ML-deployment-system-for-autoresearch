@@ -536,7 +536,12 @@ def log_to_mlflow(
             mlflow.set_tag("error", error_msg[:500])
 
         for metric_name, val in pipeline_result.get("metrics", {}).items():
-            mlflow.log_metric(f"pipeline_{metric_name}", val)
+            # KFP path adds string keys like mlflow_run_id / kfp_run_id —
+            # those are tags, not metrics.
+            if isinstance(val, (int, float)) and not isinstance(val, bool):
+                mlflow.log_metric(f"pipeline_{metric_name}", val)
+            else:
+                mlflow.set_tag(f"pipeline_{metric_name}", str(val))
 
 
 # ── TSV logging ───────────────────────────────────────────────────────────────
