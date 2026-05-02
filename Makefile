@@ -203,9 +203,21 @@ autoresearch-secret:
 # Submit one autoresearch Job with a unique timestamp-based name.
 # The Job manifest lives in jobs/ (NOT k8s/) so ArgoCD doesn't try to
 # GitOps-manage it — Jobs are one-shot, not declarative state.
+# Default uses Dockerfile CMD ["--n-experiments", "1", "--dry-run"] — smoke only.
 autoresearch-submit:
 	@ts=$$(date +%Y%m%d-%H%M%S); \
 	sed "s/name: autoresearch-smoke/name: autoresearch-$$ts/" jobs/autoresearch-job.yaml | kubectl create -f - 2>&1
+	@echo "Watch with: make autoresearch-logs"
+
+# Submit a REAL autoresearch run (no --dry-run). Override AUTORESEARCH_N for more iters.
+# Each kept improvement → commit on auto/run-<pod-name> branch via GitHub App.
+# At end of run → one PR opened against main.
+AUTORESEARCH_N ?= 1
+autoresearch-run:
+	@ts=$$(date +%Y%m%d-%H%M%S); \
+	sed -e "s/name: autoresearch-smoke/name: autoresearch-real-$$ts/" \
+	    -e "s|# args: \[.*\]|args: [\"--n-experiments\", \"$(AUTORESEARCH_N)\"]|" \
+	    jobs/autoresearch-job.yaml | kubectl create -f - 2>&1
 	@echo "Watch with: make autoresearch-logs"
 
 # Tail the most recent autoresearch Job's logs.
