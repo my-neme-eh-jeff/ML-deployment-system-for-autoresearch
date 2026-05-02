@@ -1,6 +1,7 @@
 .PHONY: repro train serve clean mlflow mlflow-kill promote test lint compile-kfp \
        argocd-ui argocd-password deploy-argocd deploy-mlflow k8s-status bootstrap demo demo-stop \
-       gke-connect cluster-sleep cluster-wake gke-status gke-urls kfp-run
+       gke-connect cluster-sleep cluster-wake gke-status gke-urls kfp-run \
+       autoresearch-secret autoresearch-submit autoresearch-logs
 
 # ── Local development ──────────────────────────────────────────────
 
@@ -188,6 +189,28 @@ kfp-run:
 	uv run python pipelines/churn_pipeline.py \
 		--run \
 		--host http://$$(kubectl get svc ml-pipeline-ui -n kubeflow -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+
+# ── Autoresearch (in-cluster K8s Job) ──────────────────────────────
+
+# Create / update the ANTHROPIC_API_KEY Secret in churn-serving from the local .env file.
+# Idempotent — safe to re-run.
+autoresearch-secret:
+	@if [ ! -f .env ]; then echo "ERROR: .env not found. Create it with ANTHROPIC_API_KEY=..."; exit 1; fi
+	@kubectl create secret generic anthropic --namespace=churn-serving \
+		--from-env-file=.env \
+		--dry-run=client -o yaml | kubectl apply -f - 2>&1 | tail -1
+
+# Submit one autoresearch Job with a unique timestamp-based name.
+autoresearch-submit:
+	@ts=$$(date +%Y%m%d-%H%M%S); \
+	sed "s/name: autoresearch-smoke/name: autoresearch-$$ts/" k8s/autoresearch-job.yaml | kubectl create -f - 2>&1
+	@echo "Watch with: make autoresearch-logs"
+
+# Tail the most recent autoresearch Job's logs.
+autoresearch-logs:
+	@latest=$$(kubectl get pods -n churn-serving -l app=autoresearch --sort-by='.metadata.creationTimestamp' --no-headers 2>/dev/null | tail -1 | awk '{print $$1}'); \
+	if [ -z "$$latest" ]; then echo "No autoresearch pod found yet."; exit 1; fi; \
+	echo "Tailing $$latest..."; kubectl logs -n churn-serving $$latest -f
 
 # ── Kubernetes (vind cluster) ──────────────────────────────────────
 

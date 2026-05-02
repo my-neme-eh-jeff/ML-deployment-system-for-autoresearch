@@ -1,0 +1,41 @@
+---
+# Autoresearch Loop — runs as a Kubernetes Job inside the cluster.
+#
+# v1 (PR-1): smoke-test only — image runs the default CMD (import + env check) and exits 0.
+# v2 (PR-2): adds serviceAccountName + dvc pull + 1-iter dry-run.
+# v3 (PR-3): adds GitHub App auth Secret + GraphQL commit on a feature branch.
+#
+# Submit one run with:
+#   kubectl create -f k8s/autoresearch-job.yaml
+# Or, with a unique name per submission:
+#   sed "s/autoresearch-smoke/autoresearch-$(date +%Y%m%d-%H%M%S)/" k8s/autoresearch-job.yaml | kubectl create -f -
+#
+# Watch:
+#   kubectl logs -n churn-serving -l job-name=autoresearch-smoke -f
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: autoresearch-smoke
+  namespace: churn-serving
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app: autoresearch
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: loop
+          image: ghcr.io/my-neme-eh-jeff/churn-autoresearch:latest
+          imagePullPolicy: Always
+          env:
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: anthropic
+                  key: ANTHROPIC_API_KEY
+          resources:
+            requests: { cpu: "200m", memory: 512Mi }
+            limits:   { cpu: "1",    memory: 2Gi }

@@ -1,0 +1,32 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+
+RUN pip install --no-cache-dir uv
+
+# Dependencies — pre-install at build time so the writable container layer
+# stays small (GKE Autopilot ephemeral storage default is 1Gi).
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev
+
+# Source files the autoresearch loop needs at runtime.
+# auto_loop.py reads + writes to params.yaml / src/train.py / src/preprocess.py,
+# runs `dvc repro` (which needs dvc.yaml + .dvc/ + DVC pointers), reads metrics.json
+# after each pipeline run.
+#
+# Data files are NOT baked in — fetched at runtime via `dvc pull` against the GCS remote.
+# This keeps the image small and decouples it from the dataset.
+COPY auto_experiment/ auto_experiment/
+COPY src/ src/
+COPY configs/ configs/
+COPY .dvc/ .dvc/
+COPY dvc.yaml dvc.lock .dvcignore ./
+COPY data/.gitignore data/churn_data.csv.dvc data/
+COPY data/processed/.gitignore data/processed/stats.json data/processed/
+
+ENV PYTHONUNBUFFERED=1
+ENV MLFLOW_TRACKING_URI=http://mlflow.mlflow.svc.cluster.local:5000
+
+# Default to a smoke test that just imports the loop module + reports env wiring.
+# Override `command:` in the Job manifest to run the real loop.
+CMD ["/app/.venv/bin/python", "-c", "import auto_experiment.auto_loop, os, sys; print('autoresearch image OK'); print(f'ANTHROPIC_API_KEY set: {bool(os.environ.get(\"ANTHROPIC_API_KEY\"))}'); print(f'MLFLOW_TRACKING_URI: {os.environ.get(\"MLFLOW_TRACKING_URI\")}'); sys.exit(0)"]
