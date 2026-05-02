@@ -19,7 +19,8 @@ spec:
         - name: loop
           image: ghcr.io/my-neme-eh-jeff/churn-autoresearch:latest
           imagePullPolicy: Always
-          # Override args to run more iterations, e.g. ["--n-experiments", "5"].
+          # `make autoresearch-run` rewrites the next line via sed.
+          # args: [REWRITE_ME]
           env:
             - name: ANTHROPIC_API_KEY
               valueFrom:

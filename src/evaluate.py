@@ -6,6 +6,7 @@ from pathlib import Path
 
 import mlflow
 import pandas as pd
+import yaml
 from sklearn.metrics import (
     accuracy_score,
     f1_score,
@@ -13,6 +14,14 @@ from sklearn.metrics import (
     recall_score,
     roc_auc_score,
 )
+
+# Two import styles: when run as `python src/evaluate.py` (DVC/KFP) only `src/`
+# is on sys.path, so `train` is the right name; pytest imports as `src.evaluate`,
+# so it needs the package-qualified name.
+try:
+    from src.train import _apply_feature_engineering
+except ImportError:
+    from train import _apply_feature_engineering
 
 TARGET = "Churn"
 MODEL_NAME = "churn-model"
@@ -35,11 +44,19 @@ def evaluate(
     model_path: str = "models/churn_model.pkl",
     metrics_path: str = "metrics.json",
     run_id_path: str = "models/run_id.txt",
+    params_path: str = "configs/params.yaml",
     auto_promote: bool = True,
 ):
+    with open(params_path) as f:
+        params = yaml.safe_load(f)["train"]
+
     df = pd.read_csv(test_path)
     X = df.drop(columns=[TARGET])
     y = df[TARGET]
+
+    # Apply the same column-adding feature engineering as train.py so
+    # the saved pipeline's ColumnTransformer sees the columns it expects.
+    X = _apply_feature_engineering(X, params)
 
     with open(model_path, "rb") as f:
         model = pickle.load(f)

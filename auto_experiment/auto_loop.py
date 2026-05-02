@@ -163,6 +163,9 @@ Current AUC-ROC in metrics.json: {state["current_auc"]:.4f}
 ## Task
 Propose ONE specific change to improve AUC-ROC. Choose something not yet tried or something that failed for a different reason than what you'd try now. Return ONLY the JSON object."""
 
+    # Prefill the assistant turn with `{` so the model is forced to emit a JSON
+    # object first; otherwise newer Sonnet variants tend to write reasoning prose
+    # before the JSON, which the parser rejects.
     total_in = 0
     total_out = 0
     for attempt in range(3):
@@ -171,16 +174,41 @@ Propose ONE specific change to improve AUC-ROC. Choose something not yet tried o
                 model=model,
                 max_tokens=8192,
                 system=system_prompt,
-                messages=[{"role": "user", "content": user_prompt}],
+                messages=[
+                    {"role": "user", "content": user_prompt},
+                    {"role": "assistant", "content": "{"},
+                ],
             )
             total_in += getattr(response.usage, "input_tokens", 0) or 0
             total_out += getattr(response.usage, "output_tokens", 0) or 0
-            text = response.content[0].text.strip()
-            if text.startswith("```"):
-                text = text.split("```", 2)[-1] if text.count("```") >= 2 else text
-                text = text.removeprefix("json").strip()
-                if text.endswith("```"):
-                    text = text[:-3].strip()
+            text = "{" + response.content[0].text
+            # Trim anything after the matching closing brace — model can stop
+            # mid-sentence if it hits max_tokens, but a well-formed JSON ends here.
+            depth = 0
+            in_string = False
+            escape = False
+            end = -1
+            for idx, ch in enumerate(text):
+                if escape:
+                    escape = False
+                    continue
+                if ch == "\\":
+                    escape = True
+                    continue
+                if ch == '"':
+                    in_string = not in_string
+                    continue
+                if in_string:
+                    continue
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        end = idx + 1
+                        break
+            if end > 0:
+                text = text[:end]
             return {
                 "proposal": json.loads(text),
                 "input_tokens": total_in,

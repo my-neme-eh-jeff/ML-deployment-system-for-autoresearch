@@ -34,3 +34,4 @@ BRAINSTORM.md
 .atlan/cache/
 # <<< atlan-builders <<<
 .specstory/
+.claude/
