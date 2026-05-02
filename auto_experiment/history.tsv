@@ -1,0 +1,2 @@
+timestamp	exp_num	experiment_name	change_type	auc_before	auc_after	delta	outcome	rationale
+2026-05-02T14:12	1	hist_gradient_boost_baseline	params_only	0.8164	0.8326	+0.0162	improved	HistGradientBoostingClassifier is consistently superior to RandomForest on tabular data with mixed feature types. It use
