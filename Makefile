@@ -201,9 +201,11 @@ autoresearch-secret:
 		--dry-run=client -o yaml | kubectl apply -f - 2>&1 | tail -1
 
 # Submit one autoresearch Job with a unique timestamp-based name.
+# The Job manifest lives in jobs/ (NOT k8s/) so ArgoCD doesn't try to
+# GitOps-manage it — Jobs are one-shot, not declarative state.
 autoresearch-submit:
 	@ts=$$(date +%Y%m%d-%H%M%S); \
-	sed "s/name: autoresearch-smoke/name: autoresearch-$$ts/" k8s/autoresearch-job.yaml | kubectl create -f - 2>&1
+	sed "s/name: autoresearch-smoke/name: autoresearch-$$ts/" jobs/autoresearch-job.yaml | kubectl create -f - 2>&1
 	@echo "Watch with: make autoresearch-logs"
 
 # Tail the most recent autoresearch Job's logs.
