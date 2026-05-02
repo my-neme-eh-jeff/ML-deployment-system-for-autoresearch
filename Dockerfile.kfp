@@ -1,11 +1,20 @@
 FROM python:3.12-slim
-# Pre-install all KFP pipeline dependencies so they live in image layers,
-# not in the container's writable layer (ephemeral storage).
-# GKE Autopilot limits ephemeral storage to 1Gi by default — runtime pip
-# installs of sklearn + mlflow + pandas exceed this.
+
+# Pre-install all KFP pipeline dependencies in image layers (not in writable layer).
+# GKE Autopilot limits ephemeral storage to 1Gi by default — runtime pip installs
+# of sklearn + mlflow + pandas exceed this.
 RUN pip install --no-cache-dir \
     pandas==2.3.3 \
     scikit-learn==1.8.0 \
     mlflow==3.10.1 \
+    "numpy>=2.0" \
+    pyyaml \
     gcsfs==2025.7.0 \
     kfp==2.16.0
+
+# Bake the project source so the KFP @component wrappers can shell out to
+# src/preprocess.py / src/train.py / src/evaluate.py. The /app layout matches
+# what the source code expects (PROJECT_ROOT = /app).
+WORKDIR /app
+COPY src/ src/
+COPY configs/ configs/

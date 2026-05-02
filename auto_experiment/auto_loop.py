@@ -269,8 +269,8 @@ def ruff_fix(proposal: dict):
 # ── Pipeline execution ────────────────────────────────────────────────────────
 
 
-def run_pipeline(timeout: int = 180) -> dict:
-    """Run dvc repro and return {'success': bool, 'auc': float, 'metrics': dict, 'stderr': str}."""
+def run_pipeline_local_dvc(timeout: int = 180) -> dict:
+    """Local-laptop path — runs `dvc repro` in the working tree."""
     env = os.environ.copy()
     if "MLFLOW_TRACKING_URI" not in env:
         env["MLFLOW_TRACKING_URI"] = "http://localhost:5000"
@@ -291,7 +291,6 @@ def run_pipeline(timeout: int = 180) -> dict:
             "metrics": {},
             "stderr": "Pipeline timed out",
         }
-
     if result.returncode != 0:
         return {
             "success": False,
@@ -299,7 +298,6 @@ def run_pipeline(timeout: int = 180) -> dict:
             "metrics": {},
             "stderr": result.stderr[-2000:],
         }
-
     try:
         metrics = json.loads(METRICS_PATH.read_text())
         return {
@@ -313,8 +311,104 @@ def run_pipeline(timeout: int = 180) -> dict:
             "success": False,
             "auc": 0.0,
             "metrics": {},
-            "stderr": f"Failed to read metrics.json: {e}",
+            "stderr": f"read metrics.json: {e}",
         }
+
+
+def run_pipeline_kfp(timeout: int = 900) -> dict:
+    """In-cluster path — submits a KFP run, waits, reads metrics from MLflow.
+
+    Each iteration is a separate KFP run visible in the KFP UI as a DAG with
+    preprocess / train / evaluate nodes. Metrics are pulled from MLflow by the
+    run_id that the train step records (no metrics.json round-trip).
+    """
+    from kfp.client import Client
+
+    kfp_host = os.environ.get(
+        "KFP_HOST", "http://ml-pipeline.kubeflow.svc.cluster.local:8888"
+    )
+    pipeline_yaml = PROJECT_ROOT / "pipelines" / "churn_pipeline.yaml"
+    if not pipeline_yaml.exists():
+        return {
+            "success": False,
+            "auc": 0.0,
+            "metrics": {},
+            "stderr": f"compiled pipeline missing at {pipeline_yaml}",
+        }
+    params_yaml_content = (PROJECT_ROOT / "configs" / "params.yaml").read_text()
+
+    print(f"  → submitting KFP run to {kfp_host}")
+    kfp = Client(host=kfp_host)
+    try:
+        run = kfp.create_run_from_pipeline_package(
+            str(pipeline_yaml),
+            arguments={"params_yaml": params_yaml_content},
+            run_name=f"autoresearch-{int(time.time())}",
+        )
+    except Exception as e:
+        return {
+            "success": False,
+            "auc": 0.0,
+            "metrics": {},
+            "stderr": f"KFP submit: {e}",
+        }
+
+    print(f"  → KFP run id: {run.run_id} — waiting up to {timeout}s")
+    try:
+        result = kfp.wait_for_run_completion(run.run_id, timeout=timeout)
+    except Exception as e:
+        return {"success": False, "auc": 0.0, "metrics": {}, "stderr": f"KFP wait: {e}"}
+    state = getattr(result.run, "state", None) or getattr(result.run, "status", None)
+    if str(state).upper() not in ("SUCCEEDED", "COMPLETE"):
+        return {
+            "success": False,
+            "auc": 0.0,
+            "metrics": {},
+            "stderr": f"KFP run state={state}, id={run.run_id}",
+        }
+
+    # Read the metrics from the latest MLflow run on the 'churn-prediction' experiment.
+    # train.py logs there with run_name == proposal experiment_name.
+    try:
+        mlflow.set_tracking_uri(os.environ["MLFLOW_TRACKING_URI"])
+        runs = mlflow.search_runs(
+            experiment_names=["churn-prediction"],
+            order_by=["start_time DESC"],
+            max_results=1,
+        )
+        if runs.empty:
+            return {
+                "success": False,
+                "auc": 0.0,
+                "metrics": {},
+                "stderr": "no MLflow run found after KFP completion",
+            }
+        row = runs.iloc[0]
+        auc = float(row.get("metrics.auc_roc", 0.0))
+        metrics = {
+            "auc_roc": auc,
+            "f1": float(row.get("metrics.f1", 0.0)),
+            "accuracy": float(row.get("metrics.accuracy", 0.0)),
+            "precision": float(row.get("metrics.precision", 0.0)),
+            "recall": float(row.get("metrics.recall", 0.0)),
+            "mlflow_run_id": row["run_id"],
+            "kfp_run_id": run.run_id,
+        }
+        return {"success": True, "auc": auc, "metrics": metrics, "stderr": ""}
+    except Exception as e:
+        return {
+            "success": False,
+            "auc": 0.0,
+            "metrics": {},
+            "stderr": f"read MLflow: {e}",
+        }
+
+
+def run_pipeline(timeout: int = 900) -> dict:
+    """Dispatch: in-cluster → KFP, laptop → local dvc repro."""
+    if os.environ.get("IN_CLUSTER") == "true":
+        return run_pipeline_kfp(timeout=timeout)
+    return run_pipeline_local_dvc(timeout=timeout)
 
 
 # ── Git commit ────────────────────────────────────────────────────────────────

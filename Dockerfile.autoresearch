@@ -26,10 +26,16 @@ RUN uv sync --frozen --no-dev
 COPY auto_experiment/ auto_experiment/
 COPY src/ src/
 COPY configs/ configs/
+COPY pipelines/ pipelines/
 COPY .dvc/ .dvc/
 COPY dvc.yaml dvc.lock .dvcignore metrics.json ./
 COPY data/.gitignore data/churn_data.csv.dvc data/
 COPY data/processed/.gitignore data/processed/stats.json data/processed/
+
+# Compile the KFP pipeline at image build time so the autoresearch loop can
+# submit it directly without re-compiling per iteration.
+RUN /app/.venv/bin/python pipelines/churn_pipeline.py && \
+    test -f pipelines/churn_pipeline.yaml
 
 # Entrypoint script — runs `dvc pull` then exec's into auto_loop.
 COPY scripts/run-autoresearch.sh /usr/local/bin/run-autoresearch
