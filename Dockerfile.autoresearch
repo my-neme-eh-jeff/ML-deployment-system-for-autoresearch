@@ -24,9 +24,16 @@ COPY dvc.yaml dvc.lock .dvcignore ./
 COPY data/.gitignore data/churn_data.csv.dvc data/
 COPY data/processed/.gitignore data/processed/stats.json data/processed/
 
+# Entrypoint script — runs `dvc pull` then exec's into auto_loop.
+COPY scripts/run-autoresearch.sh /usr/local/bin/run-autoresearch
+RUN chmod +x /usr/local/bin/run-autoresearch
+
 ENV PYTHONUNBUFFERED=1
 ENV MLFLOW_TRACKING_URI=http://mlflow.mlflow.svc.cluster.local:5000
+# auto_loop.py reads this to skip the git working-tree-clean check —
+# the container starts from a fresh image so the tree is always clean.
+ENV IN_CLUSTER=true
 
-# Default to a smoke test that just imports the loop module + reports env wiring.
-# Override `command:` in the Job manifest to run the real loop.
-CMD ["/app/.venv/bin/python", "-c", "import auto_experiment.auto_loop, os, sys; print('autoresearch image OK'); print(f'ANTHROPIC_API_KEY set: {bool(os.environ.get(\"ANTHROPIC_API_KEY\"))}'); print(f'MLFLOW_TRACKING_URI: {os.environ.get(\"MLFLOW_TRACKING_URI\")}'); sys.exit(0)"]
+ENTRYPOINT ["/usr/local/bin/run-autoresearch"]
+# Default args — override via `args:` in the Job manifest.
+CMD ["--n-experiments", "1", "--dry-run"]

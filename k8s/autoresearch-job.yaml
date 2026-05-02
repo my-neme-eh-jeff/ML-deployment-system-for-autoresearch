@@ -25,11 +25,15 @@ spec:
       labels:
         app: autoresearch
     spec:
+      serviceAccountName: autoresearch-sa  # WI-bound for dvc pull (and PR-3 secret access)
       restartPolicy: Never
       containers:
         - name: loop
           image: ghcr.io/my-neme-eh-jeff/churn-autoresearch:latest
           imagePullPolicy: Always
+          # Default args (from Dockerfile CMD): --n-experiments 1 --dry-run
+          # Override here to run more iterations:
+          # args: ["--n-experiments", "5", "--hours", "1.0"]
           env:
             - name: ANTHROPIC_API_KEY
               valueFrom:

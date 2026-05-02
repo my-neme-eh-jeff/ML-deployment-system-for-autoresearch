@@ -1,0 +1,14 @@
+---
+# ServiceAccount for the autoresearch K8s Job.
+# Bound via Workload Identity to the GCP SA
+#   autoresearch-sa@project-8018ed81-1dfe-470e-aad.iam.gserviceaccount.com
+# which has:
+#   - roles/storage.objectViewer on gs://customer-churn-dvc-remote (for `dvc pull`)
+#   - roles/secretmanager.secretAccessor (for the GitHub App PEM in PR-3)
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: autoresearch-sa
+  namespace: churn-serving
+  annotations:
+    iam.gke.io/gcp-service-account: autoresearch-sa@project-8018ed81-1dfe-470e-aad.iam.gserviceaccount.com

@@ -72,7 +72,16 @@ def check_prerequisites():
             "Run 'make mlflow-kill && make mlflow' in another terminal first."
         )
 
-    # 3. Git working tree clean for editable files
+    print("✓ ANTHROPIC_API_KEY set")
+    print(f"✓ MLflow reachable at {mlflow_uri}")
+
+    # 3. Git working tree clean for editable files — only when running locally.
+    # In-cluster (Dockerfile sets IN_CLUSTER=true) the container starts from a fresh
+    # image so the tree is always clean, and PROJECT_ROOT is not a git repo anyway.
+    if os.environ.get("IN_CLUSTER") == "true":
+        print("✓ Skipping working-tree check (IN_CLUSTER=true)")
+        return
+
     result = subprocess.run(
         ["git", "diff", "--name-only"] + EDITABLE_FILES,
         capture_output=True,
@@ -85,9 +94,6 @@ def check_prerequisites():
             f"{result.stdout.strip()}\n"
             "Commit or stash them before running the loop."
         )
-
-    print("✓ ANTHROPIC_API_KEY set")
-    print(f"✓ MLflow reachable at {mlflow_uri}")
     print("✓ Working tree clean for editable files")
 
 
