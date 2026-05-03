@@ -86,11 +86,11 @@ stages:
     outs:
     - path: models/classifier.pkl
       hash: md5
-      md5: 147ed0877a933e0f1e209060efdab285
+      md5: e4e733e20d73b8b330e0b428ce1ceba0
       size: 429835
     - path: models/run_id.txt
       hash: md5
-      md5: 50e8dea74ffbf4b466d55417adee9c34
+      md5: 0c66a9bc25b24ce0c29e11226012dc9e
       size: 32
   evaluate:
     cmd: uv run python src/evaluate.py
@@ -101,11 +101,11 @@ stages:
       size: 398614
     - path: models/classifier.pkl
       hash: md5
-      md5: 147ed0877a933e0f1e209060efdab285
+      md5: e4e733e20d73b8b330e0b428ce1ceba0
       size: 429835
     - path: models/run_id.txt
       hash: md5
-      md5: 50e8dea74ffbf4b466d55417adee9c34
+      md5: 0c66a9bc25b24ce0c29e11226012dc9e
       size: 32
     - path: src/evaluate.py
       hash: md5
