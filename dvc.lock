@@ -56,8 +56,8 @@ stages:
       size: 1502
     - path: src/train.py
       hash: md5
-      md5: e9eeb0abd7ca41e959b788002069771d
-      size: 6134
+      md5: 21199b76db53150f20108b147418b2c4
+      size: 6717
     params:
       configs/params.yaml:
         dataset:
@@ -86,11 +86,11 @@ stages:
     outs:
     - path: models/classifier.pkl
       hash: md5
-      md5: e4e733e20d73b8b330e0b428ce1ceba0
+      md5: 147ed0877a933e0f1e209060efdab285
       size: 429835
     - path: models/run_id.txt
       hash: md5
-      md5: 5d0cd1697c265c44a347ed4522dfe0e9
+      md5: 50e8dea74ffbf4b466d55417adee9c34
       size: 32
   evaluate:
     cmd: uv run python src/evaluate.py
@@ -101,11 +101,11 @@ stages:
       size: 398614
     - path: models/classifier.pkl
       hash: md5
-      md5: e4e733e20d73b8b330e0b428ce1ceba0
+      md5: 147ed0877a933e0f1e209060efdab285
       size: 429835
     - path: models/run_id.txt
       hash: md5
-      md5: 5d0cd1697c265c44a347ed4522dfe0e9
+      md5: 50e8dea74ffbf4b466d55417adee9c34
       size: 32
     - path: src/evaluate.py
       hash: md5
