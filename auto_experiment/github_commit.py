@@ -154,7 +154,13 @@ def commit_files_to_branch(
 
 
 def open_pull_request(
-    token: str, owner: str, repo: str, branch: str, title: str, body: str
+    token: str,
+    owner: str,
+    repo: str,
+    branch: str,
+    title: str,
+    body: str,
+    auto_merge: bool = True,
 ) -> str:
     r = requests.post(
         f"{GITHUB_API}/repos/{owner}/{repo}/pulls",
@@ -166,7 +172,47 @@ def open_pull_request(
         timeout=30,
     )
     r.raise_for_status()
-    return r.json()["html_url"]
+    pr = r.json()
+    if auto_merge:
+        try:
+            _enable_auto_merge(token, pr["node_id"], title)
+        except Exception as e:
+            # Auto-merge is a nice-to-have; don't block the loop on it.
+            print(f"  WARN: failed to enable auto-merge: {e}")
+    return pr["html_url"]
+
+
+def _enable_auto_merge(token: str, pr_node_id: str, commit_headline: str) -> None:
+    """Tell GitHub to merge the PR automatically once required checks pass.
+
+    Uses the GraphQL `enablePullRequestAutoMerge` mutation. Branch
+    protection still gates the actual merge: CI must be green.
+    """
+    mutation = """
+    mutation($pr:ID!, $headline:String!) {
+      enablePullRequestAutoMerge(input:{
+        pullRequestId:$pr,
+        mergeMethod:SQUASH,
+        commitHeadline:$headline
+      }) { clientMutationId }
+    }
+    """
+    r = requests.post(
+        GITHUB_GRAPHQL,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+        },
+        json={
+            "query": mutation,
+            "variables": {"pr": pr_node_id, "headline": commit_headline},
+        },
+        timeout=30,
+    )
+    r.raise_for_status()
+    body = r.json()
+    if body.get("errors"):
+        raise RuntimeError(f"auto-merge GraphQL errors: {body['errors']}")
 
 
 def github_config_from_env() -> dict | None:
