@@ -135,30 +135,30 @@ Inspired by [Karpathy's autoresearch](https://github.com/karpathy/autoresearch).
 ```mermaid
 sequenceDiagram
     autonumber
-    participant Loop as Autoresearch Job
+    participant Job as Autoresearch Job
     participant Claude
     participant KFP as Kubeflow Pipelines
     participant MLflow
-    participant GH as GitHub (App)
+    participant GH as GitHub App
     participant Argo as ArgoCD
     participant Pods as Inference Pods
 
-    Loop->>Claude: current code + params + experiment history
-    Claude-->>Loop: ONE proposed change (params or src/)
-    Loop->>KFP: submit pipeline run
+    Job->>Claude: current code, params, experiment history
+    Claude-->>Job: ONE proposed change in params or src
+    Job->>KFP: submit pipeline run
     KFP->>MLflow: log run, register model vN
     KFP->>MLflow: compare AUC vs @champion
 
     alt AUC strictly better
         MLflow-->>KFP: set @champion = vN
-        Loop->>GH: bump annotation in k8s/deployment.yaml<br/>(GraphQL createCommitOnBranch)
+        Job->>GH: bump annotation in deployment.yaml<br/>via GraphQL createCommitOnBranch
         GH-->>Argo: poll detects change
         Argo->>Pods: rolling restart
         Pods->>MLflow: load models:/classifier@champion
-        Pods-->>Loop: now serving vN
+        Pods-->>Job: now serving vN
     else AUC worse or equal
         MLflow-->>KFP: @champion unchanged
-        Loop->>Loop: revert proposed change · append to history
+        Job->>Job: revert proposed change, append to history
     end
 ```
 
