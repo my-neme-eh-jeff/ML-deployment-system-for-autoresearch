@@ -2,7 +2,7 @@
 
 Drop in a binary-classification CSV, declare its schema, and an LLM iteratively proposes code changes, trains them on Kubernetes, and ships the winners to production via GitOps.
 
-**Nobody clicks *approve*.**
+**No human in the loop.**
 
 ---
 
@@ -14,8 +14,6 @@ A system that improves an ML model on its own.
 - The system trains a new model.
 - If it scores better, the new model goes live automatically.
 - If it scores worse, the change is discarded and the loop tries something else.
-
-No human in the loop.
 
 ### For technical readers
 
