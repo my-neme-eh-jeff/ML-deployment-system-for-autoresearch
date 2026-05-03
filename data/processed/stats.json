@@ -1,14 +1,14 @@
 {
-  "total_rows": 7043,
-  "train_rows": 5634,
-  "test_rows": 1409,
-  "positive_rate": 0.2653698707936959,
-  "target_column": "Churn",
+  "total_rows": 200000,
+  "train_rows": 160000,
+  "test_rows": 40000,
+  "positive_rate": 0.03499,
+  "target_column": "isFraud",
   "numeric_features": [
-    "tenure"
+    "TransactionAmt"
   ],
   "categorical_features": [],
   "all_columns": [
-    "tenure"
+    "TransactionAmt"
   ]
 }

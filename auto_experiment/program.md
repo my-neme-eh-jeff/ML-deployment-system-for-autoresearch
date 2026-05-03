@@ -60,13 +60,13 @@ reverted. Every attempt is logged to MLflow.
 - Adding a single feature without expanding the schema in `dataset:` (the column won't reach the ColumnTransformer).
 - Adding a column-adding step in train without updating `features.py` (evaluate will crash on inference).
 - Changing `MODEL_NAME` or `EXPERIMENT_NAME`.
+- Putting **high-cardinality** columns in `categorical_features` with the default OneHotEncoder (e.g. card identifiers, ZIP/area codes, free-text categories with hundreds-to-thousands of unique values). The OHE matrix will exhaust pod memory. Prefer ordinal encoding or target encoding for any column with >100 unique values; or drop it.
 
 ---
 
 ## Output format
 
-Return ONLY a valid JSON object (the loop prefixes the assistant turn with `{`
-to enforce this — do not write prose). Schema:
+Call the `propose_experiment` tool with your proposal. The loop forces structured output via Anthropic tool-use — do not emit prose. Schema:
 
 ```json
 {
