@@ -1,4 +1,4 @@
-"""FastAPI inference server. Loads `@champion` classifier from cluster MLflow."""
+"""FastAPI inference server. Loads `@champion` classifier from MLflow."""
 
 import logging
 import os
