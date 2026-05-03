@@ -19,7 +19,7 @@ spec:
       containers:
         - name: churn-api
           # CI rewrites this image SHA on every push to main.
-          image: ghcr.io/my-neme-eh-jeff/churn-api:c8e2b9aff5a555cb90bab8c8bfa191951326640e
+          image: ghcr.io/my-neme-eh-jeff/churn-api:6cb9356b26d2586973d27293f8ace0e557685629
           imagePullPolicy: Always
           ports:
             - containerPort: 8000
