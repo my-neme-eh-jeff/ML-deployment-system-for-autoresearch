@@ -10,7 +10,7 @@
 
 1. [The One-Sentence Version](#1-the-one-sentence-version)
 2. [The Players](#2-the-players--what-each-tool-does)
-3. [Component Lifecycle — Every Detail](#3-component-lifecycle--every-detail) (GCS, CloudSQL, MLflow, KFP, ArgoCD, churn-api, CI/CD, auto_loop, DVC)
+3. [Component Lifecycle — Every Detail](#3-component-lifecycle--every-detail) (GCS, CloudSQL, MLflow, KFP, ArgoCD, inference-api, CI/CD, auto_loop, DVC)
 4. [What Is @champion?](#4-what-is-champion-the-most-important-concept)
 5. [The Full Deployment Chain](#5-the-full-deployment-chain--step-by-step)
 6. [What Happens When an Experiment FAILS](#6-what-happens-when-an-experiment-fails)
@@ -43,7 +43,7 @@ DVC                Versions data files in GCS                "git for CSVs and m
 MLflow             Stores experiment results + model registry "a database of every model ever trained"
 KFP                Runs training pipeline on Kubernetes       "each step in its own container"
 ArgoCD             Deploys whatever is in git to the cluster  "if git says X, cluster becomes X"
-churn-api          Serves predictions from the champion model "the waiter who brings you the food"
+inference-api          Serves predictions from the champion model "the waiter who brings you the food"
 auto_loop.py       Asks Claude for ideas, runs experiments    "the scientist who designs experiments"
 ```
 
@@ -90,7 +90,7 @@ gs://churn-mlflow-artifacts-project-8018ed81/
     ├── run_def456/...
     └── run_ghi789/...
                          Written by: MLflow server (when train step calls log_model)
-                         Read by: MLflow server (when churn-api calls load_model)
+                         Read by: MLflow server (when inference-api calls load_model)
 ```
 
 **Why GCS over S3/Azure/local?** We're on GCP. GKE pods access GCS natively via Workload Identity — no credentials to manage.
@@ -119,13 +119,13 @@ Public IP:     34.14.223.94 (not used — pods connect via Cloud SQL Proxy)
 
 ```text
 Tables (managed by MLflow, created automatically):
-  experiments       → {id: 1, name: "churn-prediction"}
+  experiments       → {id: 1, name: "training"}
   runs              → {run_id: "abc123", experiment_id: 1, status: "FINISHED", ...}
   params            → {run_id: "abc123", key: "n_estimators", value: "100"}
   metrics           → {run_id: "abc123", key: "auc_roc", value: 0.834}
-  model_versions    → {name: "churn-model", version: 3, run_id: "abc123",
+  model_versions    → {name: "classifier", version: 3, run_id: "abc123",
                         artifact_uri: "gs://churn-mlflow-artifacts/.../model"}
-  registered_model_aliases → {name: "churn-model", alias: "champion", version: "3"}
+  registered_model_aliases → {name: "classifier", alias: "champion", version: "3"}
 ```
 
 **How pods connect:** They DON'T connect directly. A Cloud SQL Auth Proxy sidecar container runs inside the MLflow pod and creates a secure tunnel:
@@ -172,13 +172,13 @@ GCS bucket (the files):
 **Two separate interfaces, both go through the same server:**
 
 ```text
-Interface 1: REST API (used by training pods and churn-api)
+Interface 1: REST API (used by training pods and inference-api)
   POST /api/2.0/mlflow/runs/create           ← train step creates a run
   POST /api/2.0/mlflow/runs/log-parameter    ← train step logs params
   POST /api/2.0/mlflow/runs/log-metric       ← evaluate step logs metrics
   PUT  /api/2.0/mlflow/registered-models/alias ← evaluate step sets @champion
-  GET  /api/2.0/mlflow/registered-models/alias?name=churn-model&alias=champion
-       ↑ churn-api calls this at startup to find the model URI
+  GET  /api/2.0/mlflow/registered-models/alias?name=classifier&alias=champion
+       ↑ inference-api calls this at startup to find the model URI
 
 Interface 2: Web UI (used by humans in browser)
   http://34.180.20.197:5000 → shows experiments, runs, metrics, model registry
@@ -228,9 +228,9 @@ Components:
    
    For EACH step in the pipeline:
    ┌────────────────────────────────────────────────────────────────────┐
-   │  Pod: churn-prediction-pipeline-xxx-system-container-impl-yyy     │
+   │  Pod: classifier-training-pipeline-xxx-system-container-impl-yyy │
    │  Namespace: kubeflow                                              │
-   │  Image: ghcr.io/my-neme-eh-jeff/churn-kfp:latest                │
+   │  Image: ghcr.io/my-neme-eh-jeff/pipeline-kfp:latest                │
    │  Service Account: pipeline-runner (Workload Identity → GCS)      │
    │                                                                    │
    │  Containers:                                                       │
@@ -289,11 +289,11 @@ MinIO (KFP's internal artifact store):
 GCS via MLflow (production artifact store):
   - Stores the PRODUCTION model artifacts (model.pkl, MLmodel, conda.yaml)
   - Written by train step via mlflow.log_model()
-  - Read by churn-api via mlflow.load_model()
+  - Read by inference-api via mlflow.load_model()
   - Persists forever in gs://churn-mlflow-artifacts-...
 ```
 
-**The base image (`ghcr.io/my-neme-eh-jeff/churn-kfp:latest`):**
+**The base image (`ghcr.io/my-neme-eh-jeff/pipeline-kfp:latest`):**
 Pipeline steps run inside this image. It has pandas, sklearn, mlflow, gcsfs, and kfp pre-installed. We built a custom image because GKE Autopilot limits ephemeral storage to 1Gi — runtime `pip install` of these packages exceeds that limit and causes pod eviction.
 
 **Why KFP over Airflow / Prefect / Dagster?** KFP is Kubernetes-native (each step is a pod), part of the Kubeflow ecosystem (alongside KServe, Katib), and has a built-in pipeline visualization UI. Airflow is more general-purpose (ETL, data engineering); KFP is specifically designed for ML pipelines.
@@ -324,7 +324,7 @@ Application definition: argocd/application.yaml
     path: k8s                ← ArgoCD watches EVERY yaml file in this directory
   destination:
     server: https://kubernetes.default.svc
-    namespace: churn-serving  ← resources get applied here
+    namespace: inference  ← resources get applied here
   syncPolicy:
     automated:
       prune: true            ← deletes resources removed from git
@@ -351,13 +351,13 @@ Example:
 
 ```text
 k8s/
-├── deployment.yaml          → churn-api Deployment (image, probes, resources, annotations)
-├── service.yaml             → churn-api LoadBalancer Service (port 80 → 8000)
-├── namespace.yaml           → churn-serving namespace
+├── deployment.yaml          → inference-api Deployment (image, probes, resources, annotations)
+├── service.yaml             → inference-api LoadBalancer Service (port 80 → 8000)
+├── namespace.yaml           → inference namespace
 ├── mlflow.yaml              → MLflow Deployment + Service + Namespace (all-in-one)
 ├── serviceaccounts.yaml     → K8s SAs with Workload Identity annotations
-├── hpa.yaml                 → HorizontalPodAutoscaler for churn-api (2-10 replicas)
-├── pdb.yaml                 → PodDisruptionBudgets for churn-api and mlflow
+├── hpa.yaml                 → HorizontalPodAutoscaler for inference-api (2-10 replicas)
+├── pdb.yaml                 → PodDisruptionBudgets for inference-api and mlflow
 └── kfp-expose.yaml          → Patches KFP UI to LoadBalancer
 ```
 
@@ -365,19 +365,19 @@ k8s/
 
 ---
 
-### 3.6 churn-api (Inference Server)
+### 3.6 inference-api (Inference Server)
 
 **What it is:** A FastAPI web server that loads the champion model from MLflow at startup and serves prediction requests via HTTP.
 
 **Where it runs:**
 
 ```text
-Namespace:    churn-serving
-Deployment:   churn-api (2 replicas, HPA scales 2-10)
-Image:        ghcr.io/my-neme-eh-jeff/churn-api:latest (multi-arch amd64+arm64)
-Service:      churn-api (LoadBalancer, port 80 → container port 8000)
+Namespace:    inference
+Deployment:   inference-api (2 replicas, HPA scales 2-10)
+Image:        ghcr.io/my-neme-eh-jeff/inference-api:latest (multi-arch amd64+arm64)
+Service:      inference-api (LoadBalancer, port 80 → container port 8000)
 Public URL:   http://34.180.37.1
-K8s SA:       churn-api-sa (no GCS access needed — goes through MLflow)
+K8s SA:       inference-api-sa (no GCS access needed — goes through MLflow)
 ```
 
 **Lifecycle of a pod (from creation to serving):**
@@ -389,7 +389,7 @@ K8s SA:       churn-api-sa (no GCS access needed — goes through MLflow)
 4. FastAPI startup event fires → spawns background thread:
      threading.Thread(target=_load_model_in_background).start()
 5. Background thread calls:
-     mlflow.sklearn.load_model("models:/churn-model@champion")
+     mlflow.sklearn.load_model("models:/classifier@champion")
      → HTTP to MLflow server → resolves @champion → downloads model.pkl from GCS
      → deserializes into Python object (global variable `model`)
      This takes 30-60 seconds.
@@ -450,8 +450,8 @@ Job 2: pipeline (runs only on main branch pushes, after lint passes)
   ├── Start ephemeral MLflow (sqlite:///mlflow_ci.db — THROWAWAY)
   ├── dvc repro (run pipeline against ephemeral MLflow)
   ├── dvc push (upload artifacts to GCS)
-  ├── docker buildx build --platform linux/amd64,linux/arm64 → churn-api
-  ├── docker buildx build --platform linux/amd64,linux/arm64 → churn-kfp
+  ├── docker buildx build --platform linux/amd64,linux/arm64 → inference-api
+  ├── docker buildx build --platform linux/amd64,linux/arm64 → pipeline-kfp
   ├── Push both images to ghcr.io
   └── Update k8s/deployment.yaml image SHA → git commit [skip ci] → push
   Duration: ~14 minutes (docker buildx is slow for multi-arch)
@@ -574,7 +574,7 @@ main → commit abc123                 @champion → model version 2
                                      @challenger → model version 3
 
 You run: git checkout -B main def456 You run: client.set_registered_model_alias(
-                                               "churn-model", "champion", "3")
+                                               "classifier", "champion", "3")
 
 Now:                                 Now:
 main → commit def456                 @champion → model version 3
@@ -583,13 +583,13 @@ main → commit def456                 @champion → model version 3
 
 ### Where @champion lives
 
-It's a row in MLflow's PostgreSQL database (CloudSQL). Not a file, not a Kubernetes object, not a git tag. Just a database entry that says: *"the alias 'champion' for model 'churn-model' currently points to version 2."*
+It's a row in MLflow's PostgreSQL database (CloudSQL). Not a file, not a Kubernetes object, not a git tag. Just a database entry that says: *"the alias 'champion' for model 'classifier' currently points to version 2."*
 
 ### What loads @champion
 
-The churn-api pods, at startup, run:
+The inference-api pods, at startup, run:
 ```python
-model = mlflow.sklearn.load_model("models:/churn-model@champion")
+model = mlflow.sklearn.load_model("models:/classifier@champion")
 ```
 
 This call goes to the MLflow server, which resolves `@champion` to version 2 (or whatever it currently points to), downloads that model's pickle file from GCS, and deserializes it into memory.
@@ -643,7 +643,7 @@ STEP 2: KFP pipeline trains and evaluates the model
     → Reads train.csv
     → Fits HistGradientBoostingClassifier (the proposed change)
     → Logs params + model artifact to PRODUCTION MLflow (CloudSQL)
-    → Registers model as "churn-model" version 3
+    → Registers model as "classifier" version 3
     → Outputs: run_id (passed to evaluate step)
 
   Pod 3: evaluate
@@ -654,7 +654,7 @@ STEP 2: KFP pipeline trains and evaluates the model
     │                                                    │
     │  Calls MLflow API:                                 │
     │  client.set_registered_model_alias(                │
-    │    "churn-model", "champion", "3")                 │
+    │    "classifier", "champion", "3")                 │
     │                                                    │
     │  @champion now points to version 3                 │
     │  (But pods still serve v2! Nobody restarted them.) │
@@ -713,7 +713,7 @@ STEP 4: ArgoCD detects the git change and deploys
   Creates NEW ReplicaSet with new pods
         │
         ▼
-  New pods start → call mlflow.sklearn.load_model("models:/churn-model@champion")
+  New pods start → call mlflow.sklearn.load_model("models:/classifier@champion")
   @champion resolves to version 3 → downloads v3 model from GCS
   Readiness probe passes → pod receives traffic
         │
@@ -792,7 +792,7 @@ Every Kubernetes object has metadata. Annotations are key-value pairs in that me
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: churn-api
+  name: inference-api
   annotations:                           # ← annotations on the Deployment itself
     description: "Inference API"         #   (these do NOT cause pod restarts)
 spec:
@@ -882,7 +882,7 @@ The annotation in git is auditable: you can `git log k8s/deployment.yaml` and se
 │  Does NOT know about MLflow, models, or experiments.                    │
 │  Only knows: "git says X, cluster should match X."                      │
 │                                                                          │
-│  churn-api             "The waiter"                                     │
+│  inference-api             "The waiter"                                     │
 │  ─────────                                                              │
 │  Loads @champion model from MLflow at startup.                          │
 │  Serves predictions via /predict endpoint.                              │

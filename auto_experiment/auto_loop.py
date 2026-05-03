@@ -491,42 +491,133 @@ def commit_improvement_local_git(proposal: dict, old_auc: float, new_auc: float)
     )
 
 
-def commit_improvement_github_app(
+def _read_champion_version(mlflow_run_id: str) -> tuple[str, str]:
+    """Return (version_int_as_str, run_id) of the @champion classifier.
+
+    Called right after the KFP pipeline finishes — `evaluate.py` has just
+    promoted the new champion (or kept the old one). We trust @champion as
+    the source of truth for what the loop should bump in deployment.yaml.
+    """
+    mlflow.set_tracking_uri(os.environ["MLFLOW_TRACKING_URI"])
+    client = mlflow.MlflowClient()
+    champ = client.get_model_version_by_alias("classifier", "champion")
+    return str(champ.version), str(champ.run_id)
+
+
+def open_iter_pr_with_auto_merge(
     proposal: dict,
     old_auc: float,
     new_auc: float,
-    branch: str,
+    iter_num: int,
+    run_id: str,
+    pipeline_result: dict,
     gh_config: dict,
-) -> str:
-    name = proposal.get("experiment_name", "unnamed_experiment")
+    usage: dict,
+) -> tuple[str, str]:
+    """Per-iteration: create a fresh branch from main HEAD, commit the
+    experiment files PLUS a `k8s/deployment.yaml` annotation bump (so ArgoCD
+    rolls inference-api on this PR's merge), open a PR, enable auto-merge.
+
+    Returns (pr_url, commit_sha). Does NOT wait for the merge — the loop
+    proceeds to the next iter immediately. Auto-merge fires when required
+    branch protection checks pass (lint-and-test + compile-kfp, ~1 min).
+    """
+    name = proposal.get("experiment_name", "unnamed")
     msg = f"auto-exp: {name} | AUC {old_auc:.4f} → {new_auc:.4f}"
-    files = github_commit.collect_changed_files(PROJECT_ROOT, proposal, HISTORY_PATH)
+
     token = github_commit.get_installation_token(
         gh_config["app_id"],
         gh_config["installation_id"],
         gh_config["project"],
         gh_config["secret"],
     )
-    sha = github_commit.commit_files_to_branch(
-        token, gh_config["owner"], gh_config["repo"], branch, msg, files
+
+    # Per-iter branch off the *current* main HEAD. Picks up any [skip ci]
+    # commits CI pushed back from the previous iter's merge.
+    iter_branch = f"auto/run-{run_id}-iter-{iter_num:02d}-{name[:30]}"
+    github_commit.create_branch_from_main(
+        token, gh_config["owner"], gh_config["repo"], iter_branch
     )
-    return sha
+
+    # Read main's deployment.yaml fresh and bump the two model annotations
+    # in place. Other fields (image SHA, replicas) stay untouched, so this
+    # change won't conflict with whatever CI may concurrently push.
+    deploy_content, _ = github_commit.fetch_file_from_main(
+        token, gh_config["owner"], gh_config["repo"], "k8s/deployment.yaml"
+    )
+    try:
+        version_str, mlflow_run_id = _read_champion_version(
+            pipeline_result["metrics"].get("mlflow_run_id", "")
+        )
+    except Exception as e:
+        print(f"  WARN: couldn't read @champion for annotation bump: {e}")
+        version_str, mlflow_run_id = "?", ""
+    deploy_content = github_commit.bump_deployment_annotations(
+        deploy_content, version_str, mlflow_run_id
+    )
+
+    files = github_commit.collect_changed_files(PROJECT_ROOT, proposal, HISTORY_PATH)
+    files.append(("k8s/deployment.yaml", deploy_content.encode("utf-8")))
+
+    sha = github_commit.commit_files_to_branch(
+        token, gh_config["owner"], gh_config["repo"], iter_branch, msg, files
+    )
+
+    title = msg
+    body = (
+        f"Autoresearch iteration {iter_num} of run {run_id}\n\n"
+        f"- Experiment: `{name}`\n"
+        f"- Change type: `{proposal.get('change_type', 'unknown')}`\n"
+        f"- AUC: {old_auc:.4f} → **{new_auc:.4f}** (Δ {new_auc - old_auc:+.4f})\n"
+        f"- MLflow `classifier@champion` version: **v{version_str}**\n"
+        f"- MLflow run id: `{mlflow_run_id}`\n"
+        f"- Tokens (in/out): {usage['input_tokens']:,} / {usage['output_tokens']:,}\n"
+        f"- Estimated cost: ${usage['cost_usd']:.4f}\n\n"
+        f"### Rationale\n{proposal.get('rationale', '')}\n\n"
+        f"---\n"
+        f"This PR also bumps `k8s/deployment.yaml`'s pod-template annotations "
+        f"(`mlops/classifier-version`, `mlops/classifier-run-id`) — when this "
+        f"PR merges, ArgoCD will roll `inference-api` and the new pods will "
+        f"load `classifier@champion` v{version_str} from MLflow at startup."
+    )
+    url, _ = github_commit.open_pull_request(
+        token,
+        gh_config["owner"],
+        gh_config["repo"],
+        iter_branch,
+        title,
+        body,
+        auto_merge=True,
+    )
+    return url, sha
 
 
 def commit_improvement(
     proposal: dict,
     old_auc: float,
     new_auc: float,
-    branch: str | None = None,
+    iter_num: int = 0,
+    run_id: str = "local",
+    pipeline_result: dict | None = None,
     gh_config: dict | None = None,
-):
-    if branch and gh_config:
-        sha = commit_improvement_github_app(
-            proposal, old_auc, new_auc, branch, gh_config
+    usage: dict | None = None,
+) -> str | None:
+    """Returns the per-iter PR URL when running in cluster, None for local."""
+    if gh_config and pipeline_result is not None:
+        url, sha = open_iter_pr_with_auto_merge(
+            proposal,
+            old_auc,
+            new_auc,
+            iter_num,
+            run_id,
+            pipeline_result,
+            gh_config,
+            usage or {"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0},
         )
-        print(f"  ↑ committed {sha[:8]} to branch {branch} via GitHub App")
-    else:
-        commit_improvement_local_git(proposal, old_auc, new_auc)
+        print(f"  ↑ {sha[:8]} → PR {url} (auto-merge enabled)")
+        return url
+    commit_improvement_local_git(proposal, old_auc, new_auc)
+    return None
 
 
 # ── MLflow logging ────────────────────────────────────────────────────────────
@@ -658,30 +749,9 @@ def run_loop(
     total_output_tokens = 0
 
     gh_config = github_commit.github_config_from_env() if not dry_run else None
-    branch_name: str | None = None
-    if gh_config:
-        run_id = os.environ.get("AUTORESEARCH_RUN_ID") or datetime.now(
-            timezone.utc
-        ).strftime("%Y%m%d-%H%M%S")
-        branch_name = f"auto/run-{run_id}"
-        print(f"GitHub App configured. Creating feature branch: {branch_name}")
-        try:
-            token = github_commit.get_installation_token(
-                gh_config["app_id"],
-                gh_config["installation_id"],
-                gh_config["project"],
-                gh_config["secret"],
-            )
-            github_commit.create_branch_from_main(
-                token, gh_config["owner"], gh_config["repo"], branch_name
-            )
-            print(
-                f"  ✓ branch ready at {gh_config['owner']}/{gh_config['repo']}@{branch_name}"
-            )
-        except Exception as e:
-            print(f"  ERROR creating branch: {e} — falling back to local-only run.")
-            branch_name = None
-            gh_config = None
+    run_id = os.environ.get("AUTORESEARCH_RUN_ID") or datetime.now(
+        timezone.utc
+    ).strftime("%Y%m%d-%H%M%S")
 
     print(f"\n{'=' * 60}")
     print(f"AutoResearch Loop — {n_experiments} experiments, {hours}h budget")
@@ -690,9 +760,11 @@ def run_loop(
     print(f"Claude model: {claude_model}")
     print(f"Dry run: {dry_run}")
     print(
-        f"Commit target: {'GitHub branch ' + branch_name if branch_name else 'local git'}"
+        f"Commit target: {'one PR per kept iter (auto-merge)' if gh_config else 'local git'}"
     )
+    print(f"Run id: {run_id}")
     print(f"{'=' * 60}\n")
+    pr_urls: list[str] = []
 
     for i in range(1, n_experiments + 1):
         elapsed = time.time() - start_time
@@ -773,9 +845,18 @@ def run_loop(
             # log_to_tsv must run before commit so history.tsv is in the commit.
             log_to_tsv(i, proposal, pipeline_result, best_auc, "improved", usage=usage)
             try:
-                commit_improvement(
-                    proposal, best_auc, new_auc, branch=branch_name, gh_config=gh_config
+                pr_url = commit_improvement(
+                    proposal,
+                    best_auc,
+                    new_auc,
+                    iter_num=i,
+                    run_id=run_id,
+                    pipeline_result=pipeline_result,
+                    gh_config=gh_config,
+                    usage=usage,
                 )
+                if pr_url:
+                    pr_urls.append(pr_url)
             except Exception as e:
                 print(f"  WARN: commit failed ({e}) — continuing loop")
             prev_best = best_auc
@@ -800,35 +881,10 @@ def run_loop(
         f"≈ ${total_cost_usd:.4f} ({claude_model})"
     )
 
-    if branch_name and gh_config:
-        try:
-            token = github_commit.get_installation_token(
-                gh_config["app_id"],
-                gh_config["installation_id"],
-                gh_config["project"],
-                gh_config["secret"],
-            )
-            title = f"auto-exp run {branch_name.split('/')[-1]} — AUC {baseline_auc:.4f} → {best_auc:.4f}"
-            body = (
-                f"Autoresearch run summary\n\n"
-                f"- Iterations: {i}\n"
-                f"- Wall-clock: {total_elapsed / 60:.1f} min\n"
-                f"- Baseline AUC: {baseline_auc:.4f}\n"
-                f"- Final AUC: {best_auc:.4f}\n"
-                f"- Delta: {best_auc - baseline_auc:+.4f}\n"
-                f"- Claude model: `{claude_model}`\n"
-                f"- Tokens (in/out): {total_input_tokens:,} / {total_output_tokens:,}\n"
-                f"- Estimated cost: ${total_cost_usd:.4f}\n\n"
-                f"Generated by ML-deployment-for-autoresearch GitHub App.\n"
-                f"Review the per-iteration commits on `{branch_name}` before merging."
-            )
-            url = github_commit.open_pull_request(
-                token, gh_config["owner"], gh_config["repo"], branch_name, title, body
-            )
-            print(f"PR opened: {url}")
-        except Exception as e:
-            print(f"WARN: failed to open PR: {e}")
-
+    if pr_urls:
+        print("\nPRs opened (one per kept iter, all auto-merge enabled):")
+        for u in pr_urls:
+            print(f"  {u}")
     print(f"{'=' * 60}")
 
 

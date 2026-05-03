@@ -1,5 +1,5 @@
 def main():
-    print("Hello from customer-churn!")
+    print("Hello from ml-deployment-system-for-autoresearch!")
 
 
 if __name__ == "__main__":

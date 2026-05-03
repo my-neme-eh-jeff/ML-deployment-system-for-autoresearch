@@ -89,7 +89,7 @@ if ! gcloud artifacts repositories describe "$ARTIFACT_REGISTRY_REPO" \
 else
   echo "  Artifact Registry repo $ARTIFACT_REGISTRY_REPO already exists — skipping."
 fi
-echo "  Image path: $REGION-docker.pkg.dev/$PROJECT_ID/$ARTIFACT_REGISTRY_REPO/churn-api"
+echo "  Image path: $REGION-docker.pkg.dev/$PROJECT_ID/$ARTIFACT_REGISTRY_REPO/inference-api"
 
 # ── 6. GCP Service Accounts ────────────────────────────────────────────────
 echo "[6/8] Creating GCP Service Accounts..."

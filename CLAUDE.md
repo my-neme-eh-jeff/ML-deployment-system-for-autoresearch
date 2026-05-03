@@ -71,14 +71,14 @@ make mlflow         # Port-forward cluster MLflow to localhost:5000
 make promote        # Manually promote challenger → champion
 make compile-kfp    # Compile Kubeflow Pipeline to YAML
 make clean          # Remove generated artifacts (data/processed, models, metrics.json)
-make docker-build   # Build inference container (tags as ghcr.io/my-neme-eh-jeff/churn-api:latest)
+make docker-build   # Build inference container (tags as ghcr.io/my-neme-eh-jeff/inference-api:latest)
 make docker-push    # Push to ghcr.io
 make docker-run     # Run inference container locally
 make deploy-mlflow  # Apply k8s/mlflow.yaml to cluster (one-time setup)
 make deploy-argocd  # Apply argocd/application.yaml
 make argocd-ui      # Print ArgoCD LoadBalancer IP
 make k8s-status     # Show pod status across all namespaces
-make demo           # Port-forward MLflow + churn-api, print ArgoCD IP
+make demo           # Port-forward MLflow + inference-api, print ArgoCD IP
 make demo-stop      # Kill all port-forwards
 ```
 
@@ -95,7 +95,7 @@ make demo-stop      # Kill all port-forwards
 | `mlflow` | MLflow 3.x (CloudSQL + GCS) | `http://34.180.20.197:5000` |
 | `argocd` | ArgoCD v3.x | `http://34.100.246.237` |
 | `kubeflow` | KFP UI | `http://34.93.2.209` |
-| `churn-serving` | churn-api (2 pods, HPA 2-10) | `http://34.180.37.1` |
+| `inference` | inference-api (2 pods, HPA 2-10) | `http://34.180.37.1` |
 
 ArgoCD credentials: `admin` / `TMwwd4OpkcL6fPRy` (re-read with `kubectl get secret -n argocd argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d`)
 
@@ -120,7 +120,6 @@ The project started on a local vind (vCluster in Docker) cluster using SQLite ML
 - Ephemeral MLflow in CI (fake champion promotion) → real GKE MLflow
 - ARM64-only images crashing on amd64 nodes → multi-arch (amd64+arm64)
 
-To connect kubectl to local vind: `vcluster connect churn-cluster`  
 To connect kubectl to GKE: `gcloud container clusters get-credentials mlops-cluster --region=asia-south1 --project=project-8018ed81-1dfe-470e-aad`
 
 ### DVC pipeline (local development)
@@ -143,22 +142,22 @@ data/churn_data.csv → preprocess → train.csv/test.csv → train → churn_mo
 - `src/promote.py` for manual promotion (`make promote`)
 - **After fresh MLflow deploy**: run `make mlflow-kill && make mlflow` then `make bootstrap` to seed the model registry.
 
-### API serving (churn-api)
+### API serving (inference-api)
 - Loads champion model at startup via `mlflow.sklearn.load_model("models:/churn-model@champion")`
 - `MLFLOW_TRACKING_URI=http://mlflow.mlflow.svc.cluster.local:5000` set in k8s/deployment.yaml
-- `imagePullPolicy: Always` — always pulls from `ghcr.io/my-neme-eh-jeff/churn-api`
+- `imagePullPolicy: Always` — always pulls from `ghcr.io/my-neme-eh-jeff/inference-api`
 - Returns 503 from `/health` if model not loaded (pod won't receive traffic until ready)
 - Image is public on ghcr.io — no pull secret needed
 - **Dockerfile CMD**: uses `/app/.venv/bin/uvicorn` directly (NOT `uv run uvicorn`). `uv run` re-syncs the entire venv at every container start — 15-20s overhead + filesystem contention that causes the Python process to hang in D-state on Docker overlay filesystems.
 - **Probe split**: liveness hits `/health/live` (always 200 = uvicorn is alive), readiness hits `/health` (503 until model loads). Do NOT use the same endpoint for both — the liveness probe will kill pods that are alive but still loading the model.
 - **Probe delays**: liveness `initialDelaySeconds: 30` (Python package imports from Docker overlay FS take ~20s in the cluster), readiness `initialDelaySeconds: 10` (checks frequently, pod just stays "not ready" until model loads, never killed).
 - **Memory**: 2Gi limit. MLflow client + scikit-learn model in memory needs headroom.
-- **churn-api has a public LoadBalancer IP** (`http://34.180.37.1`) — no port-forward needed.
+- **inference-api has a public LoadBalancer IP** (`http://34.180.37.1`) — no port-forward needed.
 - **Multi-arch image**: built as `linux/amd64,linux/arm64` via `docker buildx` in CI (GKE nodes are amd64, Mac dev is arm64). Local QEMU-based cross-builds segfault on Mac M-chips — always let CI build the image.
-- **GHCR package access**: the package `my-neme-eh-jeff/churn-api` must grant Actions access to repo `my-neme-eh-jeff/customer_churn_CICD` with Write role. Do this at `github.com/users/my-neme-eh-jeff/packages/container/churn-api/settings`.
+- **GHCR package access**: the package `my-neme-eh-jeff/inference-api` must grant Actions access to repo `my-neme-eh-jeff/ML-deployment-system-for-autoresearch` with Write role. Do this at `github.com/users/my-neme-eh-jeff/packages/container/inference-api/settings`.
 
 ### ArgoCD (GitOps)
-- Watches `k8s/` directory on `main` branch of `github.com/my-neme-eh-jeff/customer_churn_CICD`
+- Watches `k8s/` directory on `main` branch of `github.com/my-neme-eh-jeff/ML-deployment-system-for-autoresearch`
 - Auto-sync enabled — every push to `k8s/` triggers a redeploy
 - GKE: exposed as LoadBalancer `http://34.100.246.237` — no port-forward needed
 - Local vind: was running in `--insecure` HTTP mode (patch via `args` not `command` due to tini entrypoint)
@@ -181,7 +180,22 @@ data/churn_data.csv → preprocess → train.csv/test.csv → train → churn_mo
 - KFP host: `http://ml-pipeline.kubeflow.svc.cluster.local:8888` (in-cluster). UI at `http://34.93.2.209`.
 - GitHub App: `ML-deployment-for-autoresearch` (App ID `3576508`, install `128892452`). PEM stored in GCP Secret Manager as `github-app-key`. Workload Identity grants `secretmanager.secretAccessor` to `autoresearch-sa`.
 - Cost tracking: Anthropic `usage.input_tokens` / `output_tokens` are logged per iteration to MLflow's `auto-experiment` runs and to `auto_experiment/history.tsv`. PR body includes a totals summary.
-- Anthropic key: `kubectl create secret generic anthropic --from-env-file=.env -n churn-serving` (use `make autoresearch-secret`).
+- Anthropic key: `kubectl create secret generic anthropic --from-env-file=.env -n inference` (use `make autoresearch-secret`).
+
+### Resetting state for a fresh autoresearch run
+
+`make reset-for-fresh-run` wipes everything that shouldn't carry over between unrelated runs and rebuilds a clean v1 baseline. **Run it before:** a dataset swap, a fresh demo recording, or any time you want the AUC trajectory plot to start from a known floor.
+
+What it destroys (in order):
+1. **`auto_experiment/history.tsv`** — truncates back to the header row. Without this, a new run's iteration counter and trajectory plot are polluted by old rows.
+2. **MLflow `classifier` registered model** — deletes all versions (v1..vN) and the `@champion` alias. Forces the next training run to register as v1.
+3. **Local DVC outputs** (`data/processed/*`, `models/`, `metrics.json`) and re-runs `dvc repro --force` against the cluster MLflow → registers the current `params.yaml` baseline as v1.
+4. **Sets `classifier@champion` → v1** so `inference-api` has something to serve.
+5. **Restarts `inference-api` pods** to drop any cached old version.
+
+Prerequisites: `make mlflow-kill && make mlflow` port-forward to `localhost:5000` must be running (the MLflow client calls hit the cluster, not local SQLite).
+
+After it returns: `auto_experiment/history.tsv` has only the header, MLflow shows `classifier` v1 only with `@champion`, and `kubectl get pods -n inference` shows the fresh rollout. From here, `make autoresearch-run AUTORESEARCH_N=N` produces a clean N-iter trajectory.
 
 ## File layout
 
@@ -206,9 +220,9 @@ data/
 models/              — Generated churn_model.pkl + run_id.txt (both DVC-tracked)
 k8s/
   mlflow.yaml        — MLflow Deployment + Service + PVC (namespace: mlflow)
-  deployment.yaml    — churn-api Deployment (namespace: churn-serving)
-  service.yaml       — churn-api LoadBalancer Service
-  namespace.yaml     — churn-serving namespace
+  deployment.yaml    — inference-api Deployment (namespace: inference)
+  service.yaml       — inference-api LoadBalancer Service
+  namespace.yaml     — inference namespace
 argocd/
   application.yaml   — ArgoCD Application watching k8s/ on main branch
 ```
@@ -238,10 +252,9 @@ Champion: `churn-model` v1 (alias `@champion` in cluster MLflow, re-bootstrapped
 - [x] FastAPI inference server loading @champion from MLflow registry (not from disk)
 - [x] Dockerfile: Python 3.12, uv sync --frozen, no model baked in
 - [x] ArgoCD: deployed, LoadBalancer, --insecure mode, auto-sync watching k8s/
-- [x] churn-api: imagePullPolicy Always, loads from cluster MLflow
+- [x] inference-api: imagePullPolicy Always, loads from cluster MLflow
 - [x] End-to-end loop verified: make repro → MLflow champion → ghcr.io push → ArgoCD deploy → pod loads model → /predict works
 - [x] Pre-commit hooks (ruff)
-- [x] vind cluster running (`churn-cluster`)
 
 ### TODO
 - [ ] Swap dataset to IEEE-CIS Fraud Detection (590K × 433) for the autoresearch demo
@@ -276,7 +289,7 @@ Champion: `churn-model` v1 (alias `@champion` in cluster MLflow, re-bootstrapped
 - **Never use pip** — always `uv add`, `uv run`, `uv sync`
 - **Never use kind** — use vind (vcluster with Docker driver)
 - **Never add co-authored-by lines** to commits
-- **SSH remote**: `git@github-personal:my-neme-eh-jeff/customer_churn_CICD.git` (custom SSH alias for the `my-neme-eh-jeff` GitHub account)
+- **SSH remote**: `git@github-personal:my-neme-eh-jeff/ML-deployment-system-for-autoresearch.git` (custom SSH alias for the `my-neme-eh-jeff` GitHub account)
 - **Use real datasets** from Kaggle/research, not synthetic generated ones
 - **GCS for storage** — user has `gcloud` CLI logged in with `aman2003raj0@gmail.com` (personal) and `aman.nambisan@atlan.com` (work, used by ADC). The Atlan account has `storage.objectAdmin` on the DVC bucket.
 - **GitHub accounts**: `Aman-Nambisan` (personal, logged in via gh CLI) and `my-neme-eh-jeff` (portfolio account, used for this project). ghcr.io image is under `my-neme-eh-jeff`.
@@ -286,13 +299,13 @@ Champion: `churn-model` v1 (alias `@champion` in cluster MLflow, re-bootstrapped
 - **vind cluster EOFs**: The vind cluster API server occasionally returns EOF/connection reset under load. Wait 10-15s and retry — it recovers on its own.
 - **kubectl port-forward + ArgoCD**: Never use port-forward for ArgoCD. Use the LoadBalancer IP (`http://34.100.246.237`) directly — port-forward over TLS/gRPC drops connections.
 - **MLflow startup**: MLflow 3.x takes ~30-60s to become ready. readinessProbe has `failureThreshold: 10`. If pod is restarting, check memory — needs 2Gi limit.
-- **make demo**: Port-forwards MLflow (5000) and churn-api (8001). ArgoCD is accessed via LoadBalancer directly — no port-forward in demo.
+- **make demo**: Port-forwards MLflow (5000) and inference-api (8001). ArgoCD is accessed via LoadBalancer directly — no port-forward in demo.
 - **ghcr.io package visibility**: Must be set to Public in GitHub Packages settings. Do this via web UI — the REST API returns 404 for visibility changes on user packages.
 - **Local `mlflow ui` shadows port-forward**: If `mlflow ui` or any process is already on port 5000, `kubectl port-forward` silently fails and `make repro` writes to local disk instead of the cluster. Always run `make mlflow-kill` before `make mlflow` to ensure the port is free. Check with `lsof -i :5000`.
-- **MLflow PVC data is NOT auto-bootstrapped**: A fresh cluster or MLflow restart starts with an empty DB. After any MLflow redeploy, run `make repro` to re-register the model and set `@champion`. churn-api will return 503 until `@champion` exists.
+- **MLflow PVC data is NOT auto-bootstrapped**: A fresh cluster or MLflow restart starts with an empty DB. After any MLflow redeploy, run `make repro` to re-register the model and set `@champion`. inference-api will return 503 until `@champion` exists.
 - **ArgoCD fights manual kubectl apply**: ArgoCD auto-syncs every ~3 minutes. Any `kubectl apply` to k8s/ resources will be reverted unless the change is also committed to git. Always commit + push first, then optionally apply manually to skip the wait.
 - **MLflow 3.x --allowed-hosts + --gunicorn-opts are mutually exclusive**: Security middleware only works with uvicorn. If you add `--allowed-hosts`, remove `--gunicorn-opts` (uvicorn is the default and uses 1 worker by default).
-- **churn-api permission denied in ArgoCD UI**: Intermittent — happens when argocd-repo-server restarts. Refresh the page; it resolves on its own.
+- **inference-api permission denied in ArgoCD UI**: Intermittent — happens when argocd-repo-server restarts. Refresh the page; it resolves on its own.
 - **KFP standalone on GKE Autopilot — 4 components disabled**: `cache-deployer-deployment` and `cache-server` fail GKE Warden's CSR-rejection rule (CSRs with `system:` prefix not allowed on Autopilot — structural incompatibility). `ml-pipeline-viewer-crd` and `ml-pipeline-visualizationserver` are visualization extras, unused. All four stay at `replicas: 0`; `cluster-wake` skips them.
 - **ArgoCD — 2 unused components disabled**: `argocd-applicationset-controller` (we don't use ApplicationSet CRs) and `argocd-notifications-controller` (no Slack/email integration). Stay at `replicas: 0`.
 - **KFP PVCs MUST be regional**: `minio-pvc` and `mysql-pv-claim` use `storageClassName: standard-rwo-regional`, 5Gi each. Zonal PD (the default `standard-rwo`) locks the disk to one zone — after cluster-sleep, Autopilot may bring new nodes up in a different zone, and zonal PVCs can't follow → `1 node(s) didn't match PersistentVolume's node affinity`. Regional PD replicates across 2 zones in the region. Keep PVCs at 5Gi (regional = 2× SSD quota usage; bigger blows the SSD cap — see below).

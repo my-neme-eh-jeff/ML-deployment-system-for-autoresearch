@@ -70,22 +70,22 @@ bootstrap:
 	@echo "Step 2/2: Evaluating and setting @champion alias..."
 	MLFLOW_TRACKING_URI=http://localhost:5000 uv run python src/evaluate.py
 	@echo ""
-	@echo "Bootstrap complete. churn-api pods will load @champion on next restart."
-	@echo "Run 'kubectl rollout restart deployment/churn-api -n churn-serving' to trigger now."
+	@echo "Bootstrap complete. inference-api pods will load @champion on next restart."
+	@echo "Run 'kubectl rollout restart deployment/inference-api -n inference' to trigger now."
 
 # ── Docker ─────────────────────────────────────────────────────────
 
 docker-build:
 	docker buildx build \
 		--platform linux/amd64,linux/arm64 \
-		-t ghcr.io/my-neme-eh-jeff/churn-api:latest \
+		-t ghcr.io/my-neme-eh-jeff/inference-api:latest \
 		--push \
 		.
 
 docker-run:
 	docker run --rm -p 8000:8000 \
 		-e MLFLOW_TRACKING_URI=http://host.docker.internal:5000 \
-		ghcr.io/my-neme-eh-jeff/churn-api:latest
+		ghcr.io/my-neme-eh-jeff/inference-api:latest
 
 # ── GKE cluster ────────────────────────────────────────────────────
 
@@ -120,11 +120,11 @@ KFP_DEPLOYS    := mysql minio ml-pipeline ml-pipeline-ui ml-pipeline-persistence
 # CloudSQL storage (~few GB), 2 regional 5Gi PVCs (KFP). Idle burn ≈ $0/day.
 cluster-sleep:
 	@echo "Disabling ArgoCD auto-sync (so scale-down isn't reverted on next wake)..."
-	@kubectl patch applications.argoproj.io churn-api -n argocd --type=json \
+	@kubectl patch applications.argoproj.io inference-api -n argocd --type=json \
 		-p '[{"op":"remove","path":"/spec/syncPolicy/automated"}]' 2>/dev/null || true
 	@echo "Scaling all workloads to 0..."
 	@kubectl scale deployment --all -n mlflow --replicas=0 2>/dev/null || true
-	@kubectl scale deployment --all -n churn-serving --replicas=0 2>/dev/null || true
+	@kubectl scale deployment --all -n inference --replicas=0 2>/dev/null || true
 	@kubectl scale deployment --all -n argocd --replicas=0 2>/dev/null || true
 	@kubectl scale statefulset --all -n argocd --replicas=0 2>/dev/null || true
 	@kubectl scale deployment --all -n kubeflow --replicas=0 2>/dev/null || true
@@ -151,16 +151,16 @@ cluster-wake:
 		if [ "$$state" = "RUNNABLE" ]; then echo "  CloudSQL is RUNNABLE."; break; fi; \
 		echo "  state=$$state, retrying in 15s..."; sleep 15; \
 	done
-	@echo "Waking mlflow + churn-api..."
+	@echo "Waking mlflow + inference-api..."
 	@kubectl scale deployment --all -n mlflow --replicas=1 2>/dev/null || true
-	@kubectl scale deployment --all -n churn-serving --replicas=2 2>/dev/null || true
+	@kubectl scale deployment --all -n inference --replicas=2 2>/dev/null || true
 	@echo "Waking ArgoCD core..."
 	@for d in $(ARGOCD_DEPLOYS); do kubectl scale deployment $$d -n argocd --replicas=1 2>/dev/null || true; done
 	@kubectl scale statefulset argocd-application-controller -n argocd --replicas=1 2>/dev/null || true
 	@echo "Waking KFP core..."
 	@for d in $(KFP_DEPLOYS); do kubectl scale deployment $$d -n kubeflow --replicas=1 2>/dev/null || true; done
 	@echo "Re-enabling ArgoCD auto-sync..."
-	@kubectl patch applications.argoproj.io churn-api -n argocd --type merge \
+	@kubectl patch applications.argoproj.io inference-api -n argocd --type merge \
 		-p '{"spec":{"syncPolicy":{"automated":{"prune":true,"selfHeal":true}}}}' 2>/dev/null || true
 	@echo "Waiting for MLflow to be ready (~2 min)..."
 	@kubectl wait --for=condition=available --timeout=180s deployment/mlflow -n mlflow 2>/dev/null || true
@@ -168,7 +168,7 @@ cluster-wake:
 	@echo "URLs:"
 	@make gke-urls
 	@echo ""
-	@echo "If churn-api returns 503, run: make bootstrap"
+	@echo "If inference-api returns 503, run: make bootstrap"
 
 gke-status:
 	@echo "=== Nodes ==="
@@ -176,13 +176,13 @@ gke-status:
 	@echo "=== MLflow ===" && kubectl get pods -n mlflow --no-headers 2>/dev/null
 	@echo "=== KFP ===" && kubectl get pods -n kubeflow --no-headers 2>/dev/null | grep "ui\|pipeline" | head -5
 	@echo "=== ArgoCD ===" && kubectl get pods -n argocd --no-headers 2>/dev/null | grep Running | head -3
-	@echo "=== churn-serving ===" && kubectl get pods -n churn-serving --no-headers 2>/dev/null
+	@echo "=== inference ===" && kubectl get pods -n inference --no-headers 2>/dev/null
 
 gke-urls:
 	@echo "MLflow UI:   http://$$(kubectl get svc mlflow -n mlflow -o jsonpath='{.status.loadBalancer.ingress[0].ip}'):5000"
 	@echo "ArgoCD UI:   http://$$(kubectl get svc argocd-server -n argocd -o jsonpath='{.status.loadBalancer.ingress[0].ip}')"
 	@echo "KFP UI:      http://$$(kubectl get svc ml-pipeline-ui -n kubeflow -o jsonpath='{.status.loadBalancer.ingress[0].ip}')"
-	@echo "Inference API: http://$$(kubectl get svc churn-api -n churn-serving -o jsonpath='{.status.loadBalancer.ingress[0].ip}')/predict"
+	@echo "Inference API: http://$$(kubectl get svc inference-api -n inference -o jsonpath='{.status.loadBalancer.ingress[0].ip}')/predict"
 
 kfp-run:
 	MLFLOW_TRACKING_URI=http://$$(kubectl get svc mlflow -n mlflow -o jsonpath='{.status.loadBalancer.ingress[0].ip}'):5000 \
@@ -192,11 +192,11 @@ kfp-run:
 
 # ── Autoresearch (in-cluster K8s Job) ──────────────────────────────
 
-# Create / update the ANTHROPIC_API_KEY Secret in churn-serving from the local .env file.
+# Create / update the ANTHROPIC_API_KEY Secret in inference from the local .env file.
 # Idempotent — safe to re-run.
 autoresearch-secret:
 	@if [ ! -f .env ]; then echo "ERROR: .env not found. Create it with ANTHROPIC_API_KEY=..."; exit 1; fi
-	@kubectl create secret generic anthropic --namespace=churn-serving \
+	@kubectl create secret generic anthropic --namespace=inference \
 		--from-env-file=.env \
 		--dry-run=client -o yaml | kubectl apply -f - 2>&1 | tail -1
 
@@ -210,8 +210,9 @@ autoresearch-submit:
 	@echo "Watch with: make autoresearch-logs"
 
 # Submit a REAL autoresearch run (no --dry-run). Override iters + hours via env vars.
-# Each kept improvement → commit on auto/run-<pod-name> branch via GitHub App.
-# At end of run → one PR opened against main.
+# Each kept improvement → its own per-iter PR with auto-merge enabled.
+# Each PR's merge bumps the deployment.yaml model-version annotation, ArgoCD
+# rolls inference-api, and the new pods serve the latest @champion.
 #
 #   make autoresearch-run                                  # 1 iter, 2h budget
 #   make autoresearch-run AUTORESEARCH_N=5                 # 5 iters, 2h budget
@@ -225,11 +226,40 @@ autoresearch-run:
 	    jobs/autoresearch-job.yaml | kubectl create -f - 2>&1
 	@echo "Watch with: make autoresearch-logs"
 
+# Reset autoresearch state for a clean fresh run.
+# Run BEFORE a new dataset / new bad-baseline experiment so trajectory plots
+# and `classifier` versions start from v1 again. NOT idempotent — destructive.
+#   1. Empty auto_experiment/history.tsv to header-only (Claude's memory wipes)
+#   2. Delete MLflow `classifier` registered model (drops every version + alias)
+#   3. dvc repro --force against cluster MLflow → registers fresh v1 from
+#      whatever configs/params.yaml currently says
+#   4. Force-set classifier@champion to the new v1
+#   5. Restart inference-api pods so they load v1
+# Prerequisite: `make mlflow-kill && make mlflow` port-forward in another terminal.
+reset-for-fresh-run:
+	@echo "── 1/5: emptying history.tsv ──"
+	@printf "timestamp\texp_num\texperiment_name\tchange_type\tauc_before\tauc_after\tdelta\toutcome\tinput_tokens\toutput_tokens\tcost_usd\trationale\n" > auto_experiment/history.tsv
+	@echo "── 2/5: deleting MLflow classifier registered model ──"
+	@MLFLOW_TRACKING_URI=http://localhost:5000 uv run python -c "import mlflow; c = mlflow.MlflowClient(); \
+		[c.delete_registered_model('classifier')] if any(m.name == 'classifier' for m in c.search_registered_models()) else print('  (classifier not registered, skipping)')"
+	@echo "── 3/5: dvc repro --force to register fresh v1 from current params.yaml ──"
+	@rm -rf data/processed/test.csv data/processed/train.csv models metrics.json
+	@MLFLOW_TRACKING_URI=http://localhost:5000 uv run dvc repro --force 2>&1 | tail -10
+	@echo "── 4/5: force-set classifier@champion to v1 ──"
+	@MLFLOW_TRACKING_URI=http://localhost:5000 uv run python -c "import mlflow; \
+		c = mlflow.MlflowClient(); c.set_registered_model_alias('classifier', 'champion', '1'); \
+		v = c.get_model_version_by_alias('classifier', 'champion'); \
+		print(f'  @champion → v{v.version}')"
+	@echo "── 5/5: restart inference-api pods to pick up v1 ──"
+	@kubectl rollout restart deployment/inference-api -n inference 2>&1 | tail -1
+	@echo
+	@echo "Reset complete. Run 'make autoresearch-run AUTORESEARCH_N=5' when ready."
+
 # Tail the most recent autoresearch Job's logs.
 autoresearch-logs:
-	@latest=$$(kubectl get pods -n churn-serving -l app=autoresearch --sort-by='.metadata.creationTimestamp' --no-headers 2>/dev/null | tail -1 | awk '{print $$1}'); \
+	@latest=$$(kubectl get pods -n inference -l app=autoresearch --sort-by='.metadata.creationTimestamp' --no-headers 2>/dev/null | tail -1 | awk '{print $$1}'); \
 	if [ -z "$$latest" ]; then echo "No autoresearch pod found yet."; exit 1; fi; \
-	echo "Tailing $$latest..."; kubectl logs -n churn-serving $$latest -f
+	echo "Tailing $$latest..."; kubectl logs -n inference $$latest -f
 
 # ── Kubernetes (vind cluster) ──────────────────────────────────────
 
@@ -244,7 +274,7 @@ deploy-argocd:
 
 argocd-ui:
 	@echo "ArgoCD UI:  http://$$(kubectl get svc argocd-server -n argocd -o jsonpath='{.status.loadBalancer.ingress[0].ip}')"
-	@echo "Inference API: http://$$(kubectl get svc churn-api -n churn-serving -o jsonpath='{.status.loadBalancer.ingress[0].ip}')/health"
+	@echo "Inference API: http://$$(kubectl get svc inference-api -n inference -o jsonpath='{.status.loadBalancer.ingress[0].ip}')/health"
 
 argocd-password:
 	@kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d; echo
@@ -255,17 +285,17 @@ k8s-status:
 	@echo "── ArgoCD pods ──"
 	@kubectl get pods -n argocd --no-headers 2>/dev/null || echo "  namespace not found"
 	@echo "── Churn serving ──"
-	@kubectl get pods -n churn-serving --no-headers 2>/dev/null || echo "  namespace not found"
+	@kubectl get pods -n inference --no-headers 2>/dev/null || echo "  namespace not found"
 
 demo:
 	@echo "Starting all services (port-forwarding from cluster)..."
 	@echo "  MLflow UI:    http://localhost:5000"
 	@echo "  ArgoCD UI:    https://localhost:8090  (admin / $$(kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d))"
-	@echo "  Churn API:    http://localhost:8001"
+	@echo "  Inference API:    http://localhost:8001"
 	@echo ""
 	@kubectl port-forward -n mlflow svc/mlflow 5000:5000 &
 	@echo "  ArgoCD:       http://$$(kubectl get svc argocd-server -n argocd -o jsonpath='{.status.loadBalancer.ingress[0].ip}') (no port-forward needed)"
-	@kubectl port-forward -n churn-serving svc/churn-api 8001:80 &
+	@kubectl port-forward -n inference svc/inference-api 8001:80 &
 	@echo "All services running. Use 'make demo-stop' to stop."
 	@wait
 
