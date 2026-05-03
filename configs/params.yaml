@@ -55,12 +55,12 @@ train:
   random_state: 42
   max_depth: null
   max_features: null
-  n_estimators: 600
+  n_estimators: 1000
   min_samples_split: 2
-  min_samples_leaf: 20
+  min_samples_leaf: 15
   class_weight: null
   bootstrap: true
-  learning_rate: 0.03
+  learning_rate: 0.02
   subsample: 1.0
   l2_regularization: 0.1
   use_log_transform: false
