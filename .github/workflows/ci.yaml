@@ -120,7 +120,11 @@ jobs:
 
       - name: Run DVC pipeline
         if: steps.changes.outputs.training == 'true'
-        run: uv run dvc repro
+        # --force so CI re-runs the train stage with its own ephemeral
+        # MLflow. Without this, evaluate.py reads a cached run_id.txt
+        # pointing at a run in some OTHER MLflow instance (the local one
+        # used at bootstrap time) and fails with RESOURCE_DOES_NOT_EXIST.
+        run: uv run dvc repro --force
         env:
           MLFLOW_TRACKING_URI: http://localhost:5000
 
