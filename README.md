@@ -1,436 +1,343 @@
 # ML Deployment System for Autoresearch
 
-A generic LLM-driven AutoML harness: drop in a binary-classification CSV,
-declare its schema in `configs/params.yaml`, and watch the autoresearch loop
-traverse from a deliberately-bad baseline (DecisionTree depth=1 on a single
-feature) toward a tuned model — each kept improvement opens a PR via a GitHub
-App, CI rebuilds, ArgoCD redeploys.
+A self-improving binary-classifier platform: drop in a CSV, declare its schema, and an LLM iteratively proposes code changes, trains them on Kubernetes, and ships winners to production via GitOps — no human approval needed.
 
-The ML model itself is the easy part; the focus is the infrastructure:
-reproducible pipelines (DVC), experiment tracking + model registry (MLflow),
-Kubernetes-native orchestration (Kubeflow Pipelines), GitOps-driven deployment
-(ArgoCD), CI/CD with multi-arch images, and an autoresearch K8s Job that
-authenticates as a GitHub App to commit improvements via GraphQL
-`createCommitOnBranch`.
+---
 
-The dataset is *plug-in*. Telco Churn ships as the default while we wait on
-IEEE-CIS Fraud Detection — swap by replacing the `dataset:` block in
-`configs/params.yaml`.
+### For non-technical readers
 
-## Motivation
+This is a system that improves a machine-learning model on its own. An AI (Claude) proposes a small change, the system trains a new model, measures whether it is actually better, and if it is, automatically deploys it to a live API that anyone on the internet can call. If the new model is worse, the system discards the change and tries something else. Nobody needs to click *approve* for any of this.
 
-Learn the following items  
+### For technical readers
 
-- How do you version your data so results are reproducible six months later?
-- How do you compare experiment runs and decide which model goes to production?
-- How do you move from "works on my laptop" to running on Kubernetes for ML?
-- How do you deploy a new model without downtime — and roll back if it's worse? _Follow up: How do you make your platform so strong that HITL can be completely removed with the help of autonomous agents iteratively improving your model using auto-research -> https://github.com/my-neme-eh-jeff/customer_churn_CICD/pull/1_
+A Kubeflow Pipelines run trains and evaluates a candidate model on GKE. If its AUC strictly beats the current `@champion` alias in MLflow, the autoresearch loop bumps a deployment annotation in `k8s/` and pushes a commit via a GitHub App. ArgoCD reconciles the change, the inference Deployment rolls, and the new pods re-read `models:/classifier@champion` from MLflow at startup. Failed candidates never reach the Deployment, so production cannot regress. Dataset is plug-and-play through `configs/params.yaml` — no code knows the column names.
 
-This project answers all of those by building two parallel pipeline paths (local DVC and Kubernetes-native Kubeflow) that share the same MLflow model registry and GCS storage backend.
+---
 
-## Screenshots 
+## Live demo
 
-<img width="3024" height="1736" alt="image" src="https://github.com/user-attachments/assets/0f8be2bb-ae70-498a-8d3a-dabf05ee45ce" />
+| Surface | URL | What you see |
+|---|---|---|
+| Prediction API | <http://34.180.37.1/predict> | POST a row, get a probability |
+| Health | <http://34.180.37.1/health> | `model_version` of the currently-served champion |
+| MLflow | <http://34.180.20.197:5000> | All runs, all model versions, the `@champion` alias |
+| KFP | <http://34.93.2.209> | Pipeline DAGs in real time |
+| ArgoCD | <http://34.100.246.237> | Sync status, rollout history (admin / `Y6p9-krPfkEhm4Sd`) |
 
-<img width="3024" height="1074" alt="image" src="https://github.com/user-attachments/assets/2932d38f-e976-4514-a728-b6c80c9d1d55" />
-
-<img width="1512" height="868" alt="Screenshot 2026-04-02 at 5 10 29 PM" src="https://github.com/user-attachments/assets/4c4780e4-4cf9-4c27-8ad1-547ead8aeae9" />
-
-<img width="3024" height="1720" alt="image" src="https://github.com/user-attachments/assets/8466e9ca-a601-4d24-8176-ce1fae7aa450" />
-
+```bash
+curl -X POST http://34.180.37.1/predict \
+  -H "Content-Type: application/json" \
+  -d '{"data":{"gender":"Female","SeniorCitizen":0,"Partner":"Yes","Dependents":"No",
+       "tenure":12,"PhoneService":"Yes","MultipleLines":"No",
+       "InternetService":"Fiber optic","OnlineSecurity":"No","OnlineBackup":"No",
+       "DeviceProtection":"No","TechSupport":"No","StreamingTV":"No",
+       "StreamingMovies":"No","Contract":"Month-to-month","PaperlessBilling":"Yes",
+       "PaymentMethod":"Electronic check","MonthlyCharges":70.35,"TotalCharges":846.0}}'
+# → {"prediction":0,"probability":0.26,"model_version":"5"}
+```
 
 ## Demo Videos
 
-<!-- TODO: Record and link demo videos for each section -->
+*Recording — drop link here.*
 
 ### Full walkthrough
-<!-- Link: [Full Demo Video](https://www.youtube.com/watch?v=YOUR_LINK_HERE) -->
 
-### Part 1: Blank deployment serving predictions
-<!-- Show: cluster-wake → pods starting → health check → /predict working -->
-<!-- Link: -->
+### Part 1 — Blank deployment serving predictions
 
-### Part 2: Auto-research running live
-<!-- Show: auto_loop.py running → Claude proposing changes → KFP pipeline submitted → watching the run in KFP UI -->
-<!-- Link: -->
+### Part 2 — Auto-research running live
 
-### Part 3: Champion promoted and ArgoCD rollout
-<!-- Show: KFP evaluate step promoting @champion → auto-loop committing annotation bump → ArgoCD detecting the change → new pods rolling out → new model being served -->
-<!-- Link: -->
+### Part 3 — Champion promoted and ArgoCD rollout
 
-### Part 4: Reviewing all experiments in MLflow
-<!-- Show: MLflow UI → churn-prediction experiment → comparing runs → model registry → champion alias → all the history of what was tried and what improved -->
-<!-- Link: -->
-
-### Demo script (what to show in order)
-
-1. **Start from zero**: `make cluster-wake` → show all 4 UIs loading (MLflow, ArgoCD, KFP, churn-api)
-2. **Show it's serving**: `curl http://34.180.37.1/predict` → `{"churn":1,"churn_probability":0.71}`
-3. **Show MLflow**: Experiments → churn-prediction → model v1 is @champion → show the metrics
-4. **Launch auto-research**: `make auto-experiment` (or submit 1 KFP run via `make kfp-run`)
-5. **Watch KFP UI**: `http://34.93.2.209` → show the pipeline DAG executing (preprocess → train → evaluate)
-6. **Show promotion**: MLflow → model registry → @champion moved from v1 to v2 (AUC improved)
-7. **Show ArgoCD rollout**: `http://34.100.246.237` → churn-api deployment → show new pods replacing old
-8. **Verify new model serving**: `curl http://34.180.37.1/health` → `model_loaded: true`
-9. **Show the history**: MLflow auto-experiment → all attempts, rationale, what was kept vs reverted
-10. **Scale down**: `make cluster-sleep` → show cost savings
+### Part 4 — Reviewing all experiments in MLflow
 
 ---
 
 ## Architecture
 
-### End-to-end flow
+Everything inside the GKE cluster, plus the GCP and GitHub services it depends on:
 
-```
- ┌─────────────────────────────────────────────────────────────────────────┐
- │                       Local Development                                 │
- │                                                                         │
- │   make repro  (MLFLOW_TRACKING_URI=http://localhost:5000)               │
- │       │                                                                 │
- │       ▼                                                                 │
- │   DVC pipeline:  preprocess ──► train ──► evaluate                     │
- │                                  │              │                       │
- │                          writes run_id.txt   champion/challenger        │
- │                          to models/          decision via AUC-ROC       │
- │                                              comparison                 │
- │                                                  │                      │
- │              logs runs + registers model ────────┘                      │
- │              via port-forward (localhost:5000)                          │
- └──────────────────────────────┬──────────────────────────────────────────┘
-                                │  git push
-                                ▼
- ┌─────────────────────────────────────────────────────────────────────────┐
- │                      GitHub Actions CI/CD                               │
- │                                                                         │
- │   lint (ruff) ──► test (pytest)                                         │
- │         │                                                               │
- │         ▼  (main branch only)                                           │
- │   dvc pull (GCS) ──► dvc repro ──► dvc push (GCS)                      │
- │                          │                                              │
- │                    ephemeral MLflow                                     │
- │                    server in CI                                         │
- │                          │                                              │
- │                          ▼                                              │
- │   docker build ──► push ghcr.io/my-neme-eh-jeff/churn-api:SHA          │
- │                          │                                              │
- │                   update k8s/deployment.yaml image tag                  │
- │                   git commit [skip ci] ──► git push                     │
- └──────────────────────────────┬──────────────────────────────────────────┘
-                                │  k8s/deployment.yaml changed
-                                ▼
- ┌─────────────────────────────────────────────────────────────────────────┐
- │                    vind cluster (local Kubernetes)                      │
- │                                                                         │
- │  ┌─────────────────────────────────────────────────────────────────┐   │
- │  │  argocd namespace                                                │   │
- │  │  ArgoCD (LoadBalancer: 192.168.148.253, --insecure HTTP)         │   │
- │  │    └── watches github.com/my-neme-eh-jeff/.../k8s/ on main      │   │
- │  │    └── auto-syncs on every git push → deploys churn-api         │   │
- │  └───────────────────────────────┬─────────────────────────────────┘   │
- │                                  │ deploys                              │
- │                                  ▼                                      │
- │  ┌────────────────────┐    ┌─────────────────────────────────────────┐ │
- │  │  mlflow namespace  │    │  churn-serving namespace                │ │
- │  │                    │    │                                         │ │
- │  │  MLflow server     │◄───│  churn-api (2 pods)                     │ │
- │  │  ├── SQLite DB     │    │  image: ghcr.io/.../churn-api:SHA       │ │
- │  │  ├── artifacts/    │    │  imagePullPolicy: Always                │ │
- │  │  └── --serve-      │    │                                         │ │
- │  │      artifacts     │    │  on startup:                            │ │
- │  │                    │    │  mlflow.sklearn.load_model(             │ │
- │  │  v1 ── @champion ──┼────┤    "models:/churn-model@champion")      │ │
- │  │  v2                │    │                                         │ │
- │  │  v3 ── @challenger │    │  POST /predict → {"churn": 1,           │ │
- │  └────────────────────┘    │               "churn_probability": 0.6} │ │
- │      port-forward          └─────────────────────────────────────────┘ │
- │      localhost:5000                                                     │
- └─────────────────────────────────────────────────────────────────────────┘
-                                │
-                                ▼
- ┌─────────────────────────────────────────────────────────────────────────┐
- │                        Storage Layer                                    │
- │                                                                         │
- │   Google Cloud Storage (gs://customer-churn-dvc-remote)                │
- │   └── dvc-store/   ← datasets + model pkl (DVC-managed)               │
- └─────────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    classDef ns fill:#eef,stroke:#557,stroke-width:1px;
+    classDef ext fill:#fef9e7,stroke:#aa8;
+    classDef api fill:#e6f7e6,stroke:#393;
+
+    Internet((Internet user))
+
+    subgraph GKE["GKE Autopilot · mlops-cluster · asia-south1"]
+        direction TB
+
+        subgraph SERVE["serving namespace"]
+            API["Inference API · 2 pods · HPA 2-10"]:::api
+            JOB["Autoresearch K8s Job<br/>Claude proposes → submits KFP run → commits"]
+        end
+        SERVE:::ns
+
+        subgraph MLNS["mlflow namespace"]
+            MLF["MLflow server (uvicorn)<br/>+ Cloud SQL Auth Proxy sidecar"]
+            REG[("Model registry<br/>@champion / @challenger aliases")]
+            MLF --- REG
+        end
+        MLNS:::ns
+
+        subgraph KFNS["kubeflow namespace"]
+            KFPCTL["ml-pipeline controller"]
+            KFPUI["KFP UI"]
+            KFPCTL --- KFPUI
+        end
+        KFNS:::ns
+
+        subgraph AR["argocd namespace"]
+            ARGO["ArgoCD server<br/>watches k8s/ on main"]
+        end
+        AR:::ns
+    end
+
+    subgraph GCP["GCP managed services"]
+        CSQL[("CloudSQL Postgres<br/>MLflow backend")]:::ext
+        GCSART[("GCS · MLflow artifacts")]:::ext
+        GCSDVC[("GCS · DVC remote · datasets")]:::ext
+    end
+
+    subgraph GH["GitHub"]
+        REPO["repo · k8s/ on main"]:::ext
+        GHCR["ghcr.io · 3 container images<br/>(api · kfp-base · autoresearch)"]:::ext
+    end
+
+    Internet --> API
+    Internet --> MLF
+    Internet --> KFPUI
+    Internet --> ARGO
+
+    JOB -->|submits pipeline| KFPCTL
+    KFPCTL -->|log run · register version · set alias| MLF
+    KFPCTL -.->|pull dataset| GCSDVC
+    MLF --> CSQL
+    MLF --> GCSART
+
+    JOB -->|GitHub App · GraphQL commit| REPO
+    REPO -->|3-min poll| ARGO
+    ARGO -->|kubectl apply| API
+    API -->|"models:/classifier@champion"| MLF
+
+    GHCR -. pull .-> API
+    GHCR -. pull .-> KFPCTL
+    GHCR -. pull .-> JOB
 ```
 
-### Champion/challenger promotion
+### What's actually deployed
 
+Four artifact stores, each load-bearing for the loop. If any one is unhealthy, autoresearch stops.
+
+| # | Artifact | Where | Purpose |
+|---|---|---|---|
+| 1 | `@champion` alias on the `classifier` registered model | GKE MLflow + CloudSQL | The single declared production model. Pods re-read this on every restart. |
+| 2 | Inference container image | `ghcr.io/<user>/churn-api` | What every Pod in the inference Deployment runs |
+| 3 | KFP base image | `ghcr.io/<user>/churn-kfp` | Used by every preprocess / train / evaluate step inside KFP |
+| 4 | Autoresearch container image | `ghcr.io/<user>/autoresearch` | Runs the Claude → KFP → MLflow → GitHub loop as a K8s Job |
+
+---
+
+## The autoresearch loop
+
+Inspired by [Karpathy's autoresearch](https://github.com/karpathy/autoresearch). One iteration end-to-end:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Loop as Autoresearch Job
+    participant Claude
+    participant KFP as Kubeflow Pipelines
+    participant MLflow
+    participant GH as GitHub (App)
+    participant Argo as ArgoCD
+    participant Pods as Inference Pods
+
+    Loop->>Claude: current code + params + experiment history
+    Claude-->>Loop: ONE proposed change (params or src/)
+    Loop->>KFP: submit pipeline run
+    KFP->>MLflow: log run, register model vN
+    KFP->>MLflow: compare AUC vs @champion
+
+    alt AUC strictly better
+        MLflow-->>KFP: set @champion = vN
+        Loop->>GH: bump annotation in k8s/deployment.yaml<br/>(GraphQL createCommitOnBranch)
+        GH-->>Argo: poll detects change
+        Argo->>Pods: rolling restart
+        Pods->>MLflow: load models:/classifier@champion
+        Pods-->>Loop: now serving vN
+    else AUC worse or equal
+        MLflow-->>KFP: @champion unchanged
+        Loop->>Loop: revert proposed change · append to history
+    end
 ```
-  make repro
-      │
-      ▼
-  New model version registered in MLflow
-      │
-      ▼
-  Compare AUC-ROC vs current @champion
-      │
-      ├── Better?  → set @champion alias → git push → ArgoCD deploys
-      │                                  → new pods load updated champion
-      │
-      └── Worse?   → set @challenger alias only → prod unchanged
-                     (manual: make promote)
-```
 
-## Auto-Research: LLM-Driven Autonomous Model Improvement
+**The promotion is a chain, not a single API call.** Setting `@champion` in MLflow alone changes nothing in production — the running pods loaded their model at startup and hold it in memory. The annotation bump in `k8s/deployment.yaml` is what triggers the rolling restart that causes the pods to re-read MLflow. Failed iterations never edit the annotation, so production is incapable of regressing.
 
-Inspired by [Karpathy's autoresearch](https://github.com/karpathy/autoresearch). An LLM (Claude) autonomously proposes, tests, and deploys model improvements — zero human in the loop.
-
-**How it works (one iteration):**
-
-```
-1. Claude reads: current code + params + experiment history
-2. Claude proposes: "Switch to HistGradientBoosting" (ONE change)
-3. KFP trains and evaluates the proposal on GKE
-4. If AUC improved → @champion promoted → git commit → ArgoCD deploys new model
-5. If AUC worse   → changes reverted → nothing deployed → try something else
-```
-
-**Who does what:**
+### Who does what
 
 | Actor | Role | Does NOT do |
-|-------|------|-------------|
-| **Claude** (LLM) | Proposes code/config changes | Touch the cluster, MLflow, or git |
-| **auto_loop.py** | Applies proposals, submits KFP runs, commits to git | Train models or evaluate them |
-| **KFP Pipeline** | Runs preprocess→train→evaluate on GKE | Trigger deployments or commit to git |
-| **MLflow** | Stores runs, metrics, @champion alias | Send notifications or restart pods |
-| **ArgoCD** | Deploys what git says to the cluster | Know about models, experiments, or MLflow |
-
-**The deployment trigger**: When the auto-loop detects a new @champion, it edits an annotation in `k8s/deployment.yaml` and pushes to git. ArgoCD sees the git change and does a rolling update. Pods restart and load the new champion model. Failed experiments never change the annotation, so they are never deployed.
-
-See [EXPLANATION.md](EXPLANATION.md) for the full technical walkthrough with diagrams.
+|---|---|---|
+| **Claude** (LLM) | Proposes one code/config change per iteration | Touch the cluster, MLflow, or git directly |
+| **Autoresearch Job** | Applies proposals, submits KFP runs, commits via GitHub App | Train models or evaluate them |
+| **KFP** | Runs preprocess → train → evaluate on GKE | Trigger deployments or commit to git |
+| **MLflow** | Stores runs, metrics, registers versions, owns `@champion` | Send notifications or restart pods |
+| **ArgoCD** | Reconciles cluster state to git | Know about models, experiments, or MLflow |
 
 ```bash
 # Preview what Claude would propose (no pipeline run)
 make auto-experiment-dry-run
 
-# Run 20 experiments autonomously (needs ANTHROPIC_API_KEY in .env)
-make auto-experiment
+# Submit a real iteration loop (requires ANTHROPIC_API_KEY)
+make autoresearch-run AUTORESEARCH_N=20 AUTORESEARCH_HOURS=2
 ```
 
-## Model Registry and Promotion Flow
+---
 
-The project implements a champion/challenger pattern for model deployment:
+## Pipeline stages
 
-```
-  Training run
-       │
-       ▼
-  Register new model version (v1, v2, v3...)
-       │
-       ▼
-  Compare AUC-ROC against current champion
-       │
-       ├── Better? ──► Promote to "champion" ──► ArgoCD deploys it
-       │
-       └── Worse?  ──► Tag as "challenger" ──► Nothing changes in prod
-                       (manual promotion available via `make promote`)
-```
+A Kubeflow pipeline run, defined in `pipelines/pipeline.py`:
 
-This ensures that a bad model never silently replaces a good one. The champion alias in MLflow is the single source of truth for what's deployed.
+| Stage | Input | Output | What it does |
+|---|---|---|---|
+| **preprocess** | dataset CSV (DVC-fetched from GCS) | `train.csv`, `test.csv`, `stats.json` | Read schema from `params.yaml`, encode target, stratified 80/20 split |
+| **train** | `train.csv` | `classifier.pkl`, `run_id.txt` | Fit sklearn `Pipeline` (StandardScaler + OneHotEncoder + chosen estimator), log to MLflow, register model |
+| **evaluate** | `test.csv`, `classifier.pkl` | `metrics.json` | Score model, log metrics, set `@champion` alias if AUC strictly improves |
 
-## Dataset
+DVC is used **only** for data versioning — `data/*.dvc` files point at GCS-stored datasets so any git commit maps to exactly one dataset hash. KFP is the pipeline that actually runs.
 
-[Telco Customer Churn](https://www.kaggle.com/datasets/blastchar/telco-customer-churn) from IBM/Kaggle. 7,043 customers, 19 features (demographics, account info, services, billing), binary churn target. The dataset is DVC-tracked — git stores a lightweight pointer file; the actual data lives in GCS.
+### Plug-and-play schema
 
-## Pipeline Stages
+The whole stack reads the dataset shape from one block. To swap datasets, replace this:
 
-Defined in `dvc.yaml`, executed with `dvc repro`:
+```yaml
+# configs/params.yaml
+dataset:
+  csv_path: data/churn_data.csv
+  target_column: Churn
+  target_mapping: {"Yes": 1, "No": 0}    # omit if already 0/1
+  drop_columns: [customerID]
+  numeric_features: [tenure]              # deliberately weak baseline
+  categorical_features: []
 
-| Stage | Script | Input | Output | What it does |
-|-------|--------|-------|--------|-------------|
-| **preprocess** | `src/preprocess.py` | `data/churn_data.csv` | `train.csv`, `test.csv`, `stats.json` | Clean `TotalCharges`, encode target, stratified 80/20 split |
-| **train** | `src/train.py` | `train.csv` | `churn_model.pkl` | Fit sklearn Pipeline (StandardScaler + OneHotEncoder + RandomForest), log to MLflow, register model |
-| **evaluate** | `src/evaluate.py` | `test.csv`, `churn_model.pkl` | `metrics.json` | Score model, log metrics to MLflow, champion/challenger promotion |
-
-Current baseline metrics (no hyperparameter tuning):
-
-| Metric | Value |
-|--------|-------|
-| Accuracy | 0.7807 |
-| AUC-ROC | 0.8162 |
-| F1 | 0.5353 |
-| Precision | 0.6117 |
-| Recall | 0.4759 |
-
-## Two Pipeline Paths
-
-This project implements the same ML pipeline in two ways — to demonstrate how local development translates to production Kubernetes orchestration:
-
-**DVC Pipeline** (local development and CI)
-- Runs on any machine with `uv run dvc repro`
-- Hash-based caching — only re-runs stages whose inputs changed
-- Data versioned in GCS — any git commit maps to exact data + model
-
-**Kubeflow Pipelines** (Kubernetes-native)
-- Same logic, but each stage runs in its own container/pod
-- Defined in `pipelines/churn_pipeline.py` using KFP SDK
-- Compiles to YAML for submission to a KFP instance on the cluster
-- Steps can independently scale (e.g., GPU for training, CPU for preprocessing)
-
-## Project Structure
-
-```
-├── src/
-│   ├── preprocess.py          # Data cleaning and train/test split
-│   ├── train.py               # Model training + MLflow logging + registry
-│   ├── evaluate.py            # Evaluation + champion/challenger promotion
-│   ├── promote.py             # Manual model promotion script
-│   └── api.py                 # FastAPI inference server
-├── pipelines/
-│   ├── churn_pipeline.py      # Kubeflow Pipelines definition
-│   └── churn_pipeline.yaml    # Compiled pipeline (generated)
-├── tests/                     # 10 pytest tests covering all stages
-├── data/
-│   ├── churn_data.csv.dvc     # DVC pointer to raw dataset in GCS
-│   └── processed/             # Generated splits (DVC-tracked)
-├── models/                    # Trained model (DVC-tracked)
-├── k8s/                       # Kubernetes manifests (ArgoCD target)
-├── argocd/                    # ArgoCD application config
-├── .github/workflows/ci.yaml  # GitHub Actions: lint, test, pipeline, KFP compile
-├── dvc.yaml                   # Pipeline DAG definition
-├── dvc.lock                   # Pinned hashes of all inputs/outputs
-├── metrics.json               # Latest evaluation metrics
-├── Makefile                   # Convenience commands
-├── Dockerfile                 # Inference API container
-└── pyproject.toml             # Dependencies (managed by uv)
+train:
+  model_type: DecisionTreeClassifier      # the bad starting point
+  max_depth: 1
+  max_features: 1
 ```
 
-## Quick Start
+The baseline is intentionally bad (DecisionTree depth-1, one feature, AUC ≈ 0.55). The autoresearch loop's job is to traverse from there to a tuned model.
+
+---
+
+## Quick start
 
 ```bash
-# Install dependencies
+# Install deps
 uv sync
 
-# Pull data from GCS
+# Pull the dataset from GCS (DVC = data versioning only)
 uv run dvc pull
 
-# Run the full pipeline
-# NOTE: 'make mlflow' port-forward must be running in a separate terminal first
-make repro
-
-# View experiment runs in MLflow
-make mlflow-kill   # kill anything already on :5000 (e.g. stray 'mlflow ui')
-make mlflow        # port-forward cluster MLflow → localhost:5000
-# Open localhost:5000
-
-# Run tests
+# Run pytest
 make test
 
-# Start the inference API (locally, against cluster MLflow port-forward)
-make serve
-# POST localhost:8000/predict
+# Run the inference API locally against the GKE MLflow
+make mlflow-kill && make mlflow      # port-forward GKE MLflow → localhost:5000
+make serve                            # POST localhost:8000/predict
 ```
 
-## Live Deployment (GKE)
+---
 
-The stack runs on **GKE Autopilot** (`asia-south1`) using GCP free trial credits. Single-region, single zone — this is a portfolio demo, not a production system designed for HA.
+## GitOps: why ArgoCD (and why not Helm)
 
-| Service | URL |
-|---------|-----|
-| **MLflow UI** | `http://34.180.20.197:5000` |
-| **ArgoCD UI** | `http://34.100.246.237` (admin / Y6p9-krPfkEhm4Sd) |
-| **KFP UI** | `http://34.93.2.209` |
-| **Prediction API** | `http://34.180.37.1/predict` |
+This project uses **raw YAML manifests** + **ArgoCD** — no Helm, no Kustomize.
 
-```bash
-# Live prediction
-curl -X POST http://34.180.37.1/predict \
-  -H "Content-Type: application/json" \
-  -d '{"gender":"Female","SeniorCitizen":0,"Partner":"Yes","Dependents":"No",
-       "tenure":12,"PhoneService":"Yes","MultipleLines":"No",
-       "InternetService":"Fiber optic","OnlineSecurity":"No","OnlineBackup":"No",
-       "DeviceProtection":"No","TechSupport":"No","StreamingTV":"No",
-       "StreamingMovies":"No","Contract":"Month-to-month","PaperlessBilling":"Yes",
-       "PaymentMethod":"Electronic check","MonthlyCharges":70.35,"TotalCharges":846.0}'
-# → {"churn":1,"churn_probability":0.71}
+ArgoCD's only job is to make the cluster match what's in git. Every ~3 minutes it compares `k8s/` against the live cluster state. If they differ, it applies the git version. That's GitOps — git is the source of truth for what's deployed.
 
-# Health check
-curl http://34.180.37.1/health
-curl http://34.180.37.1/health/live
+```
+Without ArgoCD:                              With ArgoCD:
+CI updates k8s/deployment.yaml               CI updates k8s/deployment.yaml
+↓                                            ↓
+git push                                     git push
+↓                                            ↓
+NOTHING HAPPENS                              ArgoCD detects within 3 min
+↓                                            ↓
+Someone runs kubectl apply                   Rolling update, automatic
+(who? when? did they forget?)                Auditable via git log
 ```
 
-### Infrastructure (GKE)
+| Source format | When to use it | Used here? |
+|---|---|---|
+| Raw YAML | Small apps, < 10 manifests, one environment | **Yes** — 4 files in `k8s/` |
+| Helm | Many environments (dev/staging/prod), templating | No — one cluster, one env |
+| Kustomize | Environment variants without Go templates | No — same reason |
+
+The `sed` line in CI that swaps the image tag is the one-line equivalent of `helm upgrade --set image.tag=...`. Helm pays for itself once you have multiple environments or 10+ services sharing config; with one of each, it would be ceremony for zero benefit.
+
+---
+
+## Infrastructure
 
 | Component | Details |
-|-----------|---------|
-| GKE Autopilot | `mlops-cluster`, `asia-south1`, 2 nodes (autoscales) |
+|---|---|
+| GKE Autopilot | `mlops-cluster`, `asia-south1`, autoscales |
 | MLflow backend | CloudSQL PostgreSQL 15 (db-f1-micro) |
-| MLflow artifacts | GCS bucket `churn-mlflow-artifacts-project-8018ed81` |
-| DVC remote | GCS bucket `customer-churn-dvc-remote` (pre-existing) |
-| Container images | `ghcr.io/my-neme-eh-jeff/churn-api` (multi-arch: amd64 + arm64) |
-| Workload Identity | Pods use GCP SAs via WI — no service account keys |
+| MLflow artifacts | GCS bucket (`*-mlflow-artifacts-*`) |
+| DVC remote | GCS bucket (`customer-churn-dvc-remote`) |
+| Container registry | `ghcr.io/<user>/{churn-api,churn-kfp,autoresearch}` (multi-arch on amd64) |
+| Workload Identity | Pods bind to GCP SAs — no service-account keys |
+| Secrets | `ANTHROPIC_API_KEY`, GitHub App PEM in GCP Secret Manager |
 
-### Honest limitations
-
-- **Single zone** (asia-south1-c) — no HA. A zone outage takes everything down.
-- **Free trial credits** — the cluster runs on Google Cloud's $300 free trial. IPs may change if the cluster is recreated.
-- **CI MLflow** — the CI pipeline still uses an ephemeral MLflow for `dvc repro`. Champion promotion in CI is to a throwaway DB; the GKE MLflow is seeded manually via `make bootstrap`. Fixing this requires a stable CI-accessible MLflow endpoint.
-- **KFP** — Kubeflow Pipelines is deployed and the UI is accessible. The pipeline YAML is compiled by CI. Actual pipeline runs via `make kfp-run` still need to be triggered manually.
-
-## Cluster Setup (first-time or after MLflow data loss)
+### Cluster setup
 
 ```bash
-# Connect kubectl to GKE
+# Connect kubectl to the cluster
 gcloud container clusters get-credentials mlops-cluster \
-  --region=asia-south1 --project=project-8018ed81-1dfe-470e-aad
+  --region=asia-south1 --project=<project-id>
 
-# In a separate terminal, port-forward GKE MLflow
+# Bootstrap the registry: train one baseline model and set @champion
 make mlflow-kill && make mlflow
-
-# Bootstrap: train model + register @champion in GKE MLflow
 make bootstrap
 
-# Restart churn-api to load the champion
-kubectl rollout restart deployment/churn-api -n churn-serving
+# Verify
+curl http://34.180.37.1/health   # → {"model_loaded": true, "model_version": "..."}
 ```
 
-### Gotcha: local `mlflow ui` shadows the port-forward
+---
 
-If `mlflow ui` is already running on port 5000, `make mlflow` will silently bind to the wrong process — `make repro` writes to your local `mlflow.db` instead of the cluster. Always run `make mlflow-kill` first.
-
-## GitOps: Why ArgoCD (and Why Not Helm)
-
-This project uses **raw YAML manifests** + **ArgoCD** — no Helm charts, no Kustomize.
-
-**ArgoCD's only job**: make the cluster match what's in git. Every 3 minutes it compares the `k8s/` directory in git against the live cluster state. If they differ, it applies the git version. That's GitOps — git is the source of truth for what's deployed.
-
-```
-Without ArgoCD (manual):
-  CI updates k8s/deployment.yaml image tag → pushes to git → NOTHING HAPPENS
-  Someone must run: kubectl apply -f k8s/deployment.yaml
-  (Who? When? Did they forget? Did they apply the wrong file?)
-
-With ArgoCD (automated):
-  CI updates k8s/deployment.yaml image tag → pushes to git →
-  ArgoCD detects the change within 3 minutes → applies it → rolling update
-  (No human involved. Auditable via git log.)
-```
-
-**"But doesn't ArgoCD need Helm?"** No. ArgoCD reads YAML — it doesn't care where the YAML came from:
-
-| Source format | When to use it | Do we use it? |
-|---|---|---|
-| **Raw YAML** | Small apps, < 10 manifests, one environment | **Yes** — 4 files in `k8s/` |
-| **Helm charts** | Many environments (dev/staging/prod), complex templating | No — one cluster, one env |
-| **Kustomize** | Environment variants without Go templates | No — same reason |
-
-We have 4 YAML files and one environment. Helm would add `Chart.yaml`, `values.yaml`, `templates/`, and Go template syntax (`{{ .Values.foo }}`) everywhere — complexity for zero benefit. The `sed` command in CI that swaps the image tag is the one-line equivalent of what `helm upgrade --set image.tag=...` does.
-
-**When we'd add Helm**: if we needed a staging cluster alongside production, or 10+ services sharing configuration. At that point, templating pays for itself.
-
-## Tools and Why
+## Tools and why
 
 | Tool | Role | Why |
-|------|------|-----|
-| **DVC** | Data/model versioning + local pipeline | Git-native, lightweight, hash-based caching |
-| **MLflow** | Experiment tracking + model registry + artifact proxy | Industry standard, great UI, champion/challenger aliases. Serves 3 roles: database (CloudSQL), registry (@champion/@challenger aliases), and GCS proxy (--serve-artifacts) |
-| **Kubeflow Pipelines** | K8s-native training orchestration | Each step is a container/pod, scales independently, built-in DAG visualization |
-| **GKE Autopilot** | Managed Kubernetes | No node management, pay-per-pod, portfolio-grade |
-| **CloudSQL** | PostgreSQL for MLflow backend | Persistent, managed, survives pod restarts unlike SQLite |
-| **GCS** | Cloud object storage | Two buckets: DVC data versioning + MLflow model artifacts |
-| **ArgoCD** | GitOps deployment | Continuously syncs cluster state to git — push = deploy |
-| **GitHub Actions** | CI/CD | Lint, test, build multi-arch images, push to ghcr.io |
-| **uv** | Python package management | Fast, replaces pip/poetry/pyenv |
-| **ruff** | Linting + formatting | Replaces flake8/black/isort, Rust-based |
+|---|---|---|
+| **MLflow** | Experiment tracking + model registry + artifact proxy | Industry standard. `@champion`/`@challenger` aliases give clean promotion semantics. CloudSQL backend + GCS artifacts via `--serve-artifacts` means clients never need direct bucket access. |
+| **Kubeflow Pipelines** | K8s-native training orchestration | Each step is a container, scales independently, DAG visualisation built-in. The same image powers preprocess / train / evaluate. |
+| **DVC** | Data versioning | One pointer file per dataset in git, blob in GCS. Any git commit deterministically maps to one dataset hash. (Not used as a pipeline runner — KFP is.) |
+| **ArgoCD** | GitOps deployment | Continuously reconciles cluster state to git. Push = deploy. Auditable via git log. |
+| **GitHub Actions** | CI/CD | Lint, test, build images, push to ghcr.io. Path-filtered so docs-only changes don't trigger image rebuilds. |
+| **GitHub App + GraphQL** | Autoresearch's commit identity | The autoresearch Job authenticates as `ML-deployment-for-autoresearch`, signs commits via `createCommitOnBranch` so pushes carry verified-author signatures (no PAT, no service-account leakage). |
+| **GKE Autopilot** | Managed Kubernetes | No node management. Pay-per-pod. Stable LoadBalancer IPs. |
+| **CloudSQL** | Postgres for MLflow | Survives pod restarts (unlike SQLite-on-PVC). |
+| **uv + ruff** | Python tooling | Fast, replace pip/poetry/pyenv and flake8/black/isort. |
+
+---
+
+## Roadmap
+
+What's built next, roughly in order:
+
+- **IEEE-CIS Fraud Detection dataset** (590K rows, 433 features) — bigger headroom than Telco Churn. The bad-baseline → tuned-model trajectory plays out over more iterations on a more authentic problem.
+- **20+ iteration autoresearch run** on IEEE-CIS, with the AUC-vs-iteration trajectory plot in this README.
+- **Cost trajectory plot** — Anthropic input/output tokens per iteration are already logged to MLflow; a Make target turns the history into a `$ spent vs. AUC gained` chart.
+- **Argo Rollouts canary** — replace the rolling Deployment with a canary that holds 10% traffic for N seconds and aborts on a `/health` regression. Auto-rollback on bad champion.
+- **API auth** — Cloudflare Access or a single shared API key in front of `/predict`. Currently open to the public internet for demo simplicity.
+- **CI MLflow** — CI today uses an ephemeral MLflow for `dvc repro`; promotions inside CI hit a throwaway DB. A stable CI-accessible MLflow endpoint would close that loop.
+
+### Current scope
+
+This is a portfolio system, not a 5-nines production deployment:
+
+- Single zone (`asia-south1-c`) — a zone outage takes everything down.
+- Free-trial GCP credits — IPs are stable per cluster lifetime, not forever.
+- No data-drift monitoring, no auto-retraining triggers — out of scope for this project; autoresearch is the retraining mechanism.
+- No model-serving benchmarking (TTFT, P99 latency) — handled in a separate project.

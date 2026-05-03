@@ -20,8 +20,10 @@ mlartifacts/
 # Environment variables (secrets — never commit)
 .env
 
-# Local brainstorm / TODO notes — explicitly never committed
+# Local narrative / brainstorm / TODO notes — kept on disk, never committed
 BRAINSTORM.md
+EXPLANATION.md
+e2e.md
 
 # Claude Code local settings
 .claude/settings.json
