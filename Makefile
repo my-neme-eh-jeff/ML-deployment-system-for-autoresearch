@@ -1,7 +1,7 @@
 .PHONY: repro train serve clean mlflow mlflow-kill promote test lint compile-kfp \
        argocd-ui argocd-password deploy-argocd deploy-mlflow k8s-status bootstrap demo demo-stop \
        gke-connect cluster-sleep cluster-wake gke-status gke-urls kfp-run \
-       autoresearch-secret autoresearch-submit autoresearch-logs
+       autoresearch-secret autoresearch-submit autoresearch-logs reset-for-fresh-run
 
 # ── Local development ──────────────────────────────────────────────
 

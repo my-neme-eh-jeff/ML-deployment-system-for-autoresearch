@@ -376,7 +376,7 @@ Namespace:    inference
 Deployment:   inference-api (2 replicas, HPA scales 2-10)
 Image:        ghcr.io/my-neme-eh-jeff/inference-api:latest (multi-arch amd64+arm64)
 Service:      inference-api (LoadBalancer, port 80 → container port 8000)
-Public URL:   http://34.180.37.1
+Public URL:   http://34.47.242.89
 K8s SA:       inference-api-sa (no GCS access needed — goes through MLflow)
 ```
 
@@ -1078,7 +1078,7 @@ make cluster-wake     # Scale back up. Same IPs. ~3 min.
 
 | Service | URL |
 |---------|-----|
-| Prediction API | `http://34.180.37.1/predict` |
+| Prediction API | `http://34.47.242.89/predict` |
 | MLflow UI | `http://34.180.20.197:5000` (click "Model training" tab, not "GenAI") |
 | ArgoCD UI | `http://34.100.246.237` (admin / Y6p9-krPfkEhm4Sd) |
 | KFP UI | `http://34.93.2.209` |
@@ -1086,7 +1086,7 @@ make cluster-wake     # Scale back up. Same IPs. ~3 min.
 ### Test the prediction API
 
 ```bash
-curl -X POST http://34.180.37.1/predict \
+curl -X POST http://34.47.242.89/predict \
   -H "Content-Type: application/json" \
   -d '{
     "gender": "Female", "SeniorCitizen": 0, "Partner": "Yes",

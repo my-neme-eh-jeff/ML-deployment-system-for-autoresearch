@@ -95,7 +95,7 @@ make demo-stop      # Kill all port-forwards
 | `mlflow` | MLflow 3.x (CloudSQL + GCS) | `http://34.180.20.197:5000` |
 | `argocd` | ArgoCD v3.x | `http://34.100.246.237` |
 | `kubeflow` | KFP UI | `http://34.93.2.209` |
-| `inference` | inference-api (2 pods, HPA 2-10) | `http://34.180.37.1` |
+| `inference` | inference-api (2 pods, HPA 2-10) | `http://34.47.242.89` |
 
 ArgoCD credentials: `admin` / `TMwwd4OpkcL6fPRy` (re-read with `kubectl get secret -n argocd argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d`)
 
@@ -152,7 +152,7 @@ data/churn_data.csv → preprocess → train.csv/test.csv → train → churn_mo
 - **Probe split**: liveness hits `/health/live` (always 200 = uvicorn is alive), readiness hits `/health` (503 until model loads). Do NOT use the same endpoint for both — the liveness probe will kill pods that are alive but still loading the model.
 - **Probe delays**: liveness `initialDelaySeconds: 30` (Python package imports from Docker overlay FS take ~20s in the cluster), readiness `initialDelaySeconds: 10` (checks frequently, pod just stays "not ready" until model loads, never killed).
 - **Memory**: 2Gi limit. MLflow client + scikit-learn model in memory needs headroom.
-- **inference-api has a public LoadBalancer IP** (`http://34.180.37.1`) — no port-forward needed.
+- **inference-api has a public LoadBalancer IP** (`http://34.47.242.89`) — no port-forward needed.
 - **Multi-arch image**: built as `linux/amd64,linux/arm64` via `docker buildx` in CI (GKE nodes are amd64, Mac dev is arm64). Local QEMU-based cross-builds segfault on Mac M-chips — always let CI build the image.
 - **GHCR package access**: the package `my-neme-eh-jeff/inference-api` must grant Actions access to repo `my-neme-eh-jeff/ML-deployment-system-for-autoresearch` with Write role. Do this at `github.com/users/my-neme-eh-jeff/packages/container/inference-api/settings`.
 
