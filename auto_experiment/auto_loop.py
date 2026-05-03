@@ -92,9 +92,19 @@ def read_history(n: int = 10) -> str:
     return "\n".join([header] + recent)
 
 
+STATS_PATH = PROJECT_ROOT / "data" / "processed" / "stats.json"
+
+
+def read_dataset_stats() -> dict | None:
+    if not STATS_PATH.exists():
+        return None
+    return json.loads(STATS_PATH.read_text())
+
+
 def collect_state(exp_num: int, best_auc: float) -> dict:
     metrics = read_metrics()
     current_auc = metrics["auc_roc"] if metrics else best_auc
+    stats = read_dataset_stats() or {}
     return {
         "exp_num": exp_num,
         "best_auc": best_auc,
@@ -104,6 +114,7 @@ def collect_state(exp_num: int, best_auc: float) -> dict:
         "preprocess_py": read_file("src/preprocess.py"),
         "program_md": PROGRAM_MD_PATH.read_text(),
         "history": read_history(),
+        "dataset_stats": stats,
     }
 
 
@@ -174,12 +185,29 @@ def call_claude(state: dict, model: str = "claude-sonnet-4-6") -> dict:
 
     system_prompt = state["program_md"]
 
+    stats = state.get("dataset_stats") or {}
+    catalog = stats.get("all_columns") or []
+    if catalog:
+        catalog_block = (
+            f"### Available columns in this dataset ({len(catalog)} total)\n"
+            f"Pick from this list when expanding `dataset.numeric_features` / "
+            f"`dataset.categorical_features`. Anything outside this list will be "
+            f"silently dropped by preprocess and your iteration will fail to add "
+            f"signal.\n\n"
+            f"```\n{', '.join(catalog)}\n```\n\n"
+            f"Currently in use: {len(stats.get('numeric_features', []))} numeric, "
+            f"{len(stats.get('categorical_features', []))} categorical. "
+            f"Positive rate: {stats.get('positive_rate', 0.0):.3%}.\n"
+        )
+    else:
+        catalog_block = ""
+
     user_prompt = f"""## Current State (Experiment #{state["exp_num"]})
 
 Best AUC-ROC achieved so far in this session: {state["best_auc"]:.4f}
 Current AUC-ROC in metrics.json: {state["current_auc"]:.4f}
 
-### configs/params.yaml
+{catalog_block}### configs/params.yaml
 ```yaml
 {state["params_yaml"]}
 ```

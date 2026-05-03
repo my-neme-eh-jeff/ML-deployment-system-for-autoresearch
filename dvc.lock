@@ -5,7 +5,7 @@ stages:
     deps:
     - path: configs/params.yaml
       hash: md5
-      md5: 89a32b09f1a577e1960099fb777c20f8
+      md5: 1f30f9feb942b75f17a6bb70291b9af7
       size: 1380
     - path: data/ieee_cis.parquet
       hash: md5
@@ -13,8 +13,8 @@ stages:
       size: 29751989
     - path: src/preprocess.py
       hash: md5
-      md5: 192430ea9fc0eb060097b94f0dc10b5c
-      size: 3279
+      md5: 6490cffd040ff3fc8c606db3039b4046
+      size: 4246
     params:
       configs/params.yaml:
         dataset:
@@ -25,30 +25,31 @@ stages:
           - TransactionDT
           numeric_features:
           - TransactionAmt
-          categorical_features: []
+          categorical_features:
+          - ProductCD
         preprocess:
           test_size: 0.2
           random_state: 42
     outs:
     - path: data/processed/stats.json
       hash: md5
-      md5: 0f408ddaa40ae08ea4b93ffbe292dd8c
-      size: 255
+      md5: bef248a2d1249613a75936ba93379f47
+      size: 4791
     - path: data/processed/test.csv
       hash: md5
-      md5: 2c042b2d2adab540c1b8335d1625b302
-      size: 318604
+      md5: 2338b22096fc013702c1590b248e667b
+      size: 398614
     - path: data/processed/train.csv
       hash: md5
-      md5: 4ce21978fb14b1a2df7c81bc34fdf5f8
-      size: 1273576
+      md5: 3371e14f582b7082ca39d533e25a23fa
+      size: 1593586
   train:
     cmd: uv run python src/train.py
     deps:
     - path: data/processed/train.csv
       hash: md5
-      md5: 4ce21978fb14b1a2df7c81bc34fdf5f8
-      size: 1273576
+      md5: 3371e14f582b7082ca39d533e25a23fa
+      size: 1593586
     - path: src/features.py
       hash: md5
       md5: 24c90900de30d735a0ffbd462f2f5795
@@ -67,12 +68,13 @@ stages:
           - TransactionDT
           numeric_features:
           - TransactionAmt
-          categorical_features: []
+          categorical_features:
+          - ProductCD
         train:
           model_type: DecisionTreeClassifier
           random_state: 42
-          max_depth: 1
-          max_features: 1
+          max_depth:
+          max_features:
           n_estimators: 100
           min_samples_split: 2
           min_samples_leaf: 1
@@ -84,26 +86,26 @@ stages:
     outs:
     - path: models/classifier.pkl
       hash: md5
-      md5: b1535ef714f2f5de8629172c2a9963fc
-      size: 2407
+      md5: 147ed0877a933e0f1e209060efdab285
+      size: 429835
     - path: models/run_id.txt
       hash: md5
-      md5: 3c219a512c1e489300f73502b02aa284
+      md5: 9435efc400a5a29d699b806c30c0bd1f
       size: 32
   evaluate:
     cmd: uv run python src/evaluate.py
     deps:
     - path: data/processed/test.csv
       hash: md5
-      md5: 2c042b2d2adab540c1b8335d1625b302
-      size: 318604
+      md5: 2338b22096fc013702c1590b248e667b
+      size: 398614
     - path: models/classifier.pkl
       hash: md5
-      md5: b1535ef714f2f5de8629172c2a9963fc
-      size: 2407
+      md5: 147ed0877a933e0f1e209060efdab285
+      size: 429835
     - path: models/run_id.txt
       hash: md5
-      md5: 3c219a512c1e489300f73502b02aa284
+      md5: 9435efc400a5a29d699b806c30c0bd1f
       size: 32
     - path: src/evaluate.py
       hash: md5
@@ -123,15 +125,16 @@ stages:
           - TransactionDT
           numeric_features:
           - TransactionAmt
-          categorical_features: []
+          categorical_features:
+          - ProductCD
         evaluate:
           primary_metric: auc_roc
           auto_promote: true
         train:
           model_type: DecisionTreeClassifier
           random_state: 42
-          max_depth: 1
-          max_features: 1
+          max_depth:
+          max_features:
           n_estimators: 100
           min_samples_split: 2
           min_samples_leaf: 1
@@ -143,5 +146,5 @@ stages:
     outs:
     - path: metrics.json
       hash: md5
-      md5: e99c6c4f71d163a977a4277f1089879e
-      size: 94
+      md5: 7e1f857f115c51676b2b7a27f5765109
+      size: 103
