@@ -1,6 +1,21 @@
-# Customer Churn Prediction — End-to-End MLOps Pipeline
+# ML Deployment System for Autoresearch
 
-An end-to-end MLOps project that takes a customer churn prediction model from raw data to production-ready deployment. The ML model is intentionally kept simple — the real value is in the infrastructure: reproducible pipelines, data versioning, experiment tracking, a model registry with automated promotion, Kubernetes-native orchestration, and GitOps-driven deployment.
+A generic LLM-driven AutoML harness: drop in a binary-classification CSV,
+declare its schema in `configs/params.yaml`, and watch the autoresearch loop
+traverse from a deliberately-bad baseline (DecisionTree depth=1 on a single
+feature) toward a tuned model — each kept improvement opens a PR via a GitHub
+App, CI rebuilds, ArgoCD redeploys.
+
+The ML model itself is the easy part; the focus is the infrastructure:
+reproducible pipelines (DVC), experiment tracking + model registry (MLflow),
+Kubernetes-native orchestration (Kubeflow Pipelines), GitOps-driven deployment
+(ArgoCD), CI/CD with multi-arch images, and an autoresearch K8s Job that
+authenticates as a GitHub App to commit improvements via GraphQL
+`createCommitOnBranch`.
+
+The dataset is *plug-in*. Telco Churn ships as the default while we wait on
+IEEE-CIS Fraud Detection — swap by replacing the `dataset:` block in
+`configs/params.yaml`.
 
 ## Motivation
 

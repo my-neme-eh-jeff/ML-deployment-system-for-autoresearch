@@ -4,8 +4,10 @@ stages:
     deps:
       - data/churn_data.csv
       - src/preprocess.py
+      - configs/params.yaml
     params:
       - configs/params.yaml:
+          - dataset
           - preprocess
     outs:
       - data/processed/train.csv
@@ -19,22 +21,27 @@ stages:
     deps:
       - data/processed/train.csv
       - src/train.py
+      - src/features.py
     params:
       - configs/params.yaml:
+          - dataset
           - train
     outs:
-      - models/churn_model.pkl
+      - models/classifier.pkl
       - models/run_id.txt
 
   evaluate:
     cmd: uv run python src/evaluate.py
     deps:
       - data/processed/test.csv
-      - models/churn_model.pkl
+      - models/classifier.pkl
       - models/run_id.txt
       - src/evaluate.py
+      - src/features.py
     params:
       - configs/params.yaml:
+          - dataset
+          - train
           - evaluate
     metrics:
       - metrics.json:

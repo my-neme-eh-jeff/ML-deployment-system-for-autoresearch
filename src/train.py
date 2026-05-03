@@ -1,4 +1,4 @@
-"""Train a customer churn prediction model and log to MLflow."""
+"""Train a binary classifier — schema and hyperparameters from configs/params.yaml."""
 
 import pickle
 from pathlib import Path
@@ -14,59 +14,51 @@ from sklearn.ensemble import (
     HistGradientBoostingClassifier,
     RandomForestClassifier,
 )
+from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import FunctionTransformer, OneHotEncoder, StandardScaler
+from sklearn.tree import DecisionTreeClassifier
 
-NUMERIC_FEATURES = [
-    "SeniorCitizen",
-    "tenure",
-    "MonthlyCharges",
-    "TotalCharges",
-]
+try:
+    from src.features import apply_feature_engineering, derived_numeric_features
+except ImportError:
+    from features import apply_feature_engineering, derived_numeric_features
 
-CATEGORICAL_FEATURES = [
-    "gender",
-    "Partner",
-    "Dependents",
-    "PhoneService",
-    "MultipleLines",
-    "InternetService",
-    "OnlineSecurity",
-    "OnlineBackup",
-    "DeviceProtection",
-    "TechSupport",
-    "StreamingTV",
-    "StreamingMovies",
-    "Contract",
-    "PaperlessBilling",
-    "PaymentMethod",
-]
-
-TARGET = "Churn"
-MODEL_NAME = "churn-model"
+MODEL_NAME = "classifier"
+EXPERIMENT_NAME = "training"
 
 _CLASSIFIERS = {
+    "DecisionTreeClassifier": DecisionTreeClassifier,
     "RandomForestClassifier": RandomForestClassifier,
     "ExtraTreesClassifier": ExtraTreesClassifier,
     "GradientBoostingClassifier": GradientBoostingClassifier,
     "HistGradientBoostingClassifier": HistGradientBoostingClassifier,
+    "LogisticRegression": LogisticRegression,
 }
 
 
 def _build_classifier(params: dict):
-    model_type = params.get("model_type", "RandomForestClassifier")
+    model_type = params.get("model_type", "DecisionTreeClassifier")
     if model_type not in _CLASSIFIERS:
         raise ValueError(
-            f"Unknown model_type '{model_type}'. Choose from: {list(_CLASSIFIERS)}"
+            f"Unknown model_type {model_type!r}. Choose from: {list(_CLASSIFIERS)}"
         )
+    cls = _CLASSIFIERS[model_type]
+    rs = params.get("random_state", 42)
 
-    clf_cls = _CLASSIFIERS[model_type]
-    random_state = params.get("random_state", 42)
-
+    if model_type == "DecisionTreeClassifier":
+        return cls(
+            random_state=rs,
+            max_depth=params.get("max_depth") or None,
+            min_samples_split=params.get("min_samples_split", 2),
+            min_samples_leaf=params.get("min_samples_leaf", 1),
+            max_features=params.get("max_features"),
+            class_weight=params.get("class_weight") or None,
+        )
     if model_type in ("RandomForestClassifier", "ExtraTreesClassifier"):
-        kwargs = dict(
+        return cls(
             n_estimators=params.get("n_estimators", 100),
-            random_state=random_state,
+            random_state=rs,
             max_depth=params.get("max_depth") or None,
             min_samples_split=params.get("min_samples_split", 2),
             min_samples_leaf=params.get("min_samples_leaf", 1),
@@ -74,31 +66,37 @@ def _build_classifier(params: dict):
             class_weight=params.get("class_weight") or None,
             bootstrap=params.get("bootstrap", True),
         )
-    elif model_type == "GradientBoostingClassifier":
-        kwargs = dict(
+    if model_type == "GradientBoostingClassifier":
+        return cls(
             n_estimators=params.get("n_estimators", 100),
             learning_rate=params.get("learning_rate", 0.1),
             max_depth=params.get("max_depth") or 3,
             subsample=params.get("subsample", 1.0),
-            random_state=random_state,
+            random_state=rs,
         )
-    elif model_type == "HistGradientBoostingClassifier":
-        kwargs = dict(
+    if model_type == "HistGradientBoostingClassifier":
+        return cls(
             max_iter=params.get("n_estimators", 100),
             learning_rate=params.get("learning_rate", 0.1),
             max_depth=params.get("max_depth") or None,
-            random_state=random_state,
+            random_state=rs,
+        )
+    if model_type == "LogisticRegression":
+        return cls(
+            C=params.get("C", 1.0),
+            random_state=rs,
+            class_weight=params.get("class_weight") or None,
+            max_iter=params.get("max_iter", 1000),
         )
 
-    return clf_cls(**kwargs)
 
+def build_pipeline(dataset: dict, params: dict) -> Pipeline:
+    numeric = list(dataset.get("numeric_features", [])) + derived_numeric_features(
+        params
+    )
+    categorical = list(dataset.get("categorical_features", []))
 
-def build_pipeline(params: dict) -> Pipeline:
-    numeric_features = list(NUMERIC_FEATURES)
-
-    use_log = params.get("use_log_transform", False)
-
-    if use_log:
+    if params.get("use_log_transform"):
         numeric_transformer = Pipeline(
             [
                 ("log", FunctionTransformer(np.log1p, validate=False)),
@@ -108,91 +106,55 @@ def build_pipeline(params: dict) -> Pipeline:
     else:
         numeric_transformer = StandardScaler()
 
-    preprocessor = ColumnTransformer(
-        transformers=[
-            ("num", numeric_transformer, numeric_features),
+    transformers = []
+    if numeric:
+        transformers.append(("num", numeric_transformer, numeric))
+    if categorical:
+        transformers.append(
             (
                 "cat",
                 OneHotEncoder(handle_unknown="ignore", sparse_output=False),
-                CATEGORICAL_FEATURES,
-            ),
-        ]
-    )
+                categorical,
+            )
+        )
+    if not transformers:
+        raise ValueError(
+            "No features declared — set numeric_features or categorical_features in params.dataset."
+        )
 
+    preprocessor = ColumnTransformer(transformers=transformers)
     return Pipeline(
-        [
-            ("preprocessor", preprocessor),
-            ("classifier", _build_classifier(params)),
-        ]
+        [("preprocessor", preprocessor), ("classifier", _build_classifier(params))]
     )
 
 
-def _apply_feature_engineering(X: pd.DataFrame, params: dict) -> pd.DataFrame:
-    """Apply optional feature engineering that adds new columns to X."""
-    X = X.copy()
-
-    if params.get("add_charges_per_month", False):
-        X["charges_per_month"] = X["TotalCharges"] / (X["tenure"] + 1)
-
-    return X
+def load_params(params_path: str) -> tuple[dict, dict]:
+    with open(params_path) as f:
+        cfg = yaml.safe_load(f)
+    return cfg["dataset"], cfg["train"]
 
 
 def train(
     train_path: str = "data/processed/train.csv",
-    model_path: str = "models/churn_model.pkl",
+    model_path: str = "models/classifier.pkl",
     params_path: str = "configs/params.yaml",
 ):
-    with open(params_path) as f:
-        all_params = yaml.safe_load(f)
-    params = all_params["train"]
+    dataset, params = load_params(params_path)
+    target = dataset["target_column"]
 
     df = pd.read_csv(train_path)
-    X = df.drop(columns=[TARGET])
-    y = df[TARGET]
+    X = df.drop(columns=[target])
+    y = df[target]
+    X = apply_feature_engineering(X, params)
 
-    X = _apply_feature_engineering(X, params)
+    pipeline = build_pipeline(dataset, params)
 
-    if (
-        params.get("add_charges_per_month", False)
-        and "charges_per_month" not in NUMERIC_FEATURES
-    ):
-        numeric_features_extended = NUMERIC_FEATURES + ["charges_per_month"]
-        use_log = params.get("use_log_transform", False)
-        if use_log:
-            numeric_transformer = Pipeline(
-                [
-                    ("log", FunctionTransformer(np.log1p, validate=False)),
-                    ("scaler", StandardScaler()),
-                ]
-            )
-        else:
-            numeric_transformer = StandardScaler()
-
-        preprocessor = ColumnTransformer(
-            transformers=[
-                ("num", numeric_transformer, numeric_features_extended),
-                (
-                    "cat",
-                    OneHotEncoder(handle_unknown="ignore", sparse_output=False),
-                    CATEGORICAL_FEATURES,
-                ),
-            ]
-        )
-        pipeline = Pipeline(
-            [
-                ("preprocessor", preprocessor),
-                ("classifier", _build_classifier(params)),
-            ]
-        )
-    else:
-        pipeline = build_pipeline(params)
-
-    mlflow.set_experiment("churn-prediction")
-
+    mlflow.set_experiment(EXPERIMENT_NAME)
     with mlflow.start_run(run_name="train") as run:
         mlflow.log_params({k: v for k, v in params.items() if v is not None})
         mlflow.log_param("n_features", X.shape[1])
         mlflow.log_param("n_train_samples", X.shape[0])
+        mlflow.log_param("dataset_csv", dataset.get("csv_path", "?"))
 
         pipeline.fit(X, y)
 
@@ -200,7 +162,7 @@ def train(
         with open(model_path, "wb") as f:
             pickle.dump(pipeline, f)
 
-        # evaluate.py reads run_id.txt to log metrics on the exact training run.
+        # evaluate.py reads run_id.txt to log metrics on this exact run.
         run_id_path = Path(model_path).parent / "run_id.txt"
         run_id_path.write_text(run.info.run_id)
 

@@ -1,146 +1,93 @@
-# AutoResearch Program: Customer Churn Model Improvement
+# AutoResearch Program: improve a binary classifier
 
-**Inspired by:** [Karpathy's autoresearch](https://github.com/karpathy/autoresearch)
-> "Give an AI agent a small but real ML setup and let it experiment autonomously."
-
-This project follows the autoresearch pattern adapted for sklearn + DVC + MLflow:
-- Propose ONE focused change per iteration
-- Run the full pipeline (`dvc repro`)
-- Keep the change if AUC-ROC improves by ≥ 0.001, revert otherwise
-- Every attempt (kept or reverted) is logged to MLflow
+You are running an autoresearch loop on a binary-classification task. Each
+iteration: propose ONE focused change, the loop runs the full pipeline
+(`dvc repro` locally / KFP run in cluster), and the change is kept iff
+AUC-ROC improves by ≥ `auto_experiment.min_improvement`. Otherwise it is
+reverted. Every attempt is logged to MLflow.
 
 ---
 
-## Project Context
+## Project context (read this before proposing)
 
-**Dataset:** Telco Customer Churn (Kaggle)
-- 7,043 customers, 19 features, binary churn target
-- Churn rate: ~26.5% (mild class imbalance)
-- Train set: 5,634 rows | Test set: 1,409 rows
-
-**Current baseline:** AUC-ROC = 0.8162 (RandomForest, 100 estimators)
-
-**Primary metric:** AUC-ROC (higher is better). Secondary: F1, Recall.
-
-**Pipeline:** `preprocess.py` → `train.py` → `evaluate.py`
-- Run with: `dvc repro`
-- Results in: `metrics.json`
-
-**Feature sets:**
-- Numeric (4): SeniorCitizen, tenure, MonthlyCharges, TotalCharges
-- Categorical (15): gender, Partner, Dependents, PhoneService, MultipleLines, InternetService, OnlineSecurity, OnlineBackup, DeviceProtection, TechSupport, StreamingTV, StreamingMovies, Contract, PaperlessBilling, PaymentMethod
+- **Pipeline:** `src/preprocess.py` → `src/train.py` → `src/evaluate.py`
+- **Outputs:** `models/classifier.pkl`, `models/run_id.txt`, `metrics.json`
+- **Schema is in `configs/params.yaml`** under `dataset:` — `target_column`,
+  `numeric_features`, `categorical_features`, `csv_path`, `target_mapping`,
+  `drop_columns`. preprocess/train/evaluate ALL read from there. There are no
+  hardcoded column names in code anymore.
+- **Available columns** for the current dataset are listed in
+  `data/processed/stats.json` under `all_columns`. Use that as the catalog
+  when proposing to expand `numeric_features` / `categorical_features`.
+- **Primary metric:** AUC-ROC. Secondary: F1, Recall.
 
 ---
 
-## What You Can Modify
+## What you can modify
 
 **ALLOWED:**
-- `configs/params.yaml` — hyperparameters, feature engineering flags, model type
-- `src/train.py` — model training logic, `build_pipeline()`, feature engineering
-- `src/preprocess.py` — data cleaning, feature creation, split strategy
+- `configs/params.yaml` — `dataset.numeric_features`, `dataset.categorical_features`, all `train.*` hyperparameters, feature-engineering flags
+- `src/train.py` — model construction, ColumnTransformer wiring
+- `src/preprocess.py` — generic data-cleaning logic (numeric coercion, NaN handling)
 
-**NEVER MODIFY (sacred):**
-- `src/evaluate.py` — evaluation and champion/challenger logic
-- `dvc.yaml` — pipeline DAG definition
-- Output file paths: `models/churn_model.pkl`, `models/run_id.txt`, `metrics.json`, `data/processed/train.csv`, `data/processed/test.csv`
-- MLflow patterns: `MODEL_NAME = "churn-model"`, `run_id_path.write_text(run.info.run_id)`, sklearn Pipeline wrapper
-- The `auto_experiment:` section of params.yaml
-
----
-
-## Research Directions (ordered by expected impact)
-
-### Tier 1 — High confidence improvements
-
-**1. Switch to HistGradientBoostingClassifier**
-- Set `model_type: HistGradientBoostingClassifier` in params.yaml
-- Native NaN handling, faster than RF, often 1-3% better AUC on tabular data
-- No need to change any code — train.py already supports it
-- Expected: +0.01 to +0.02 AUC
-
-**2. Add `charges_per_month` interaction feature**
-- Set `add_charges_per_month: true` in params.yaml
-- `charges_per_month = TotalCharges / (tenure + 1)` captures "cost per month relative to tenure"
-- High-value customers who pay more monthly are less likely to churn
-- Expected: +0.005 to +0.01 AUC
-
-### Tier 2 — Medium confidence
-
-**3. Class weight balancing**
-- Set `class_weight: balanced` in params.yaml (works for RF and ExtraTrees)
-- Addresses the 26.5% churn rate imbalance
-- Tends to improve Recall and F1 at slight AUC cost — watch the delta carefully
-- Expected: +0.003 to -0.005 AUC (uncertain direction, helps F1 and Recall)
-
-**4. Tune max_depth for RF**
-- RandomForest grows fully by default (unlimited depth) — this can overfit
-- Try `max_depth: 10` or `max_depth: 15`
-- Expected: +0.002 to +0.008 AUC
-
-**5. GradientBoostingClassifier tuned**
-- Set `model_type: GradientBoostingClassifier`, `n_estimators: 300`, `learning_rate: 0.05`, `max_depth: 4`
-- Slower than HistGBM but well-studied; good baseline for boosting
-- Expected: +0.01 to +0.02 AUC
-
-**6. Ordinal encoding for Contract**
-- Modify `src/train.py`: replace OneHot for Contract with OrdinalEncoder (Month-to-month=0, One year=1, Two year=2)
-- Contract is the single strongest churn predictor; ordinal encoding preserves the ordering signal
-- Expected: +0.003 to +0.008 AUC
-
-### Tier 3 — Speculative (try if Tier 1-2 exhausted)
-
-**7. Log transform on charges**
-- Set `use_log_transform: true` in params.yaml
-- MonthlyCharges/TotalCharges are right-skewed; log1p normalizes them
-- Low impact for tree models (they don't need scale normalization) but worth one try
-- Expected: +0.000 to +0.005 AUC
-
-**8. n_estimators tuning for RF**
-- Try `n_estimators: 300` or `n_estimators: 500`
-- More trees rarely hurt but may improve stability
-- Expected: +0.001 to +0.003 AUC
+**NEVER MODIFY:**
+- `src/evaluate.py` — evaluation + champion/challenger logic
+- `src/features.py` — shared feature-engineering helper used by both train and evaluate. If you add a column-adding feature here, also extend `derived_numeric_features()` so the saved sklearn pipeline expects it.
+- `dvc.yaml` — pipeline DAG
+- Output paths: `models/classifier.pkl`, `models/run_id.txt`, `metrics.json`, `data/processed/train.csv`, `data/processed/test.csv`
+- `auto_experiment:` block of `params.yaml`
+- Constants: `MODEL_NAME = "classifier"`, `EXPERIMENT_NAME = "training"`
 
 ---
 
-## Key Business Context (helps with feature ideas)
+## Research directions (general for binary classification)
 
-The **strongest churn signals** in Telco data (from published research):
-1. **Contract type** — Month-to-month churns at ~43%, Two-year at ~3%
-2. **Tenure** — New customers (1-12 months) churn most
-3. **InternetService** — Fiber optic customers churn more (premium, competitive)
-4. **Electronic check payment** — Correlates with higher churn
-5. **No online security/tech support** — Correlates with churn
+### Model family — switch up the algorithm
+- Tree ensembles often outperform single decision trees: `RandomForestClassifier`, `ExtraTreesClassifier`, `GradientBoostingClassifier`, `HistGradientBoostingClassifier`. Available via `train.model_type` — code already handles all of them.
+- For high-cardinality / sparse inputs, `LogisticRegression` with `class_weight: balanced` is a strong baseline.
 
-Use this domain knowledge when proposing feature engineering ideas.
+### Feature space — expand what the model sees
+- Add columns to `dataset.numeric_features` or `dataset.categorical_features` from the catalog in `data/processed/stats.json`.
+- Add interaction features in `src/features.py` (and update `derived_numeric_features()`).
+
+### Hyperparameters — tune
+- For trees: `max_depth`, `min_samples_leaf`, `min_samples_split`, `n_estimators`, `max_features`.
+- For boosting: `learning_rate`, `subsample`, `n_estimators`.
+- Class imbalance: `class_weight: balanced` (works for tree classifiers).
+- Numeric scaling: `use_log_transform: true` on right-skewed numeric features (low impact for tree models).
+
+### Anti-pattern — don't do these
+- Adding a single feature without expanding the schema in `dataset:` (the column won't reach the ColumnTransformer).
+- Adding a column-adding step in train without updating `features.py` (evaluate will crash on inference).
+- Changing `MODEL_NAME` or `EXPERIMENT_NAME`.
 
 ---
 
-## Output Format
+## Output format
 
-You MUST return ONLY a valid JSON object — no markdown, no explanation outside the JSON.
+Return ONLY a valid JSON object (the loop prefixes the assistant turn with `{`
+to enforce this — do not write prose). Schema:
 
 ```json
 {
   "rationale": "2-3 sentences explaining WHY this specific change should improve AUC-ROC",
-  "change_type": "params_only",
-  "experiment_name": "hist_gradient_boost_baseline",
+  "change_type": "params_only | train_py | preprocess_py | both_src",
+  "experiment_name": "short_snake_case_name",
   "params_yaml": "<full new content of configs/params.yaml, or null if unchanged>",
   "train_py": "<full new content of src/train.py, or null if unchanged>",
   "preprocess_py": "<full new content of src/preprocess.py, or null if unchanged>"
 }
 ```
 
-**Rules:**
-- `change_type` must be one of: `params_only`, `train_py`, `preprocess_py`, `both_src`
-- Always provide FULL file contents (not diffs) for any file you change
-- `experiment_name` must be short snake_case (used as a git commit message and MLflow run name)
-- Never set all three file fields to null — at least one must contain new content
-- Keep the `auto_experiment:` section of params.yaml exactly as-is (never modify it)
-- Preserve all invariants listed in "What You Can Modify" section
+Rules:
+- Always provide FULL file contents (not diffs) for any file you change.
+- Never set all three file fields to null — at least one must contain new content.
+- Preserve the `auto_experiment:` block of `params.yaml` exactly.
+- Preserve all invariants in "What You Can Modify".
 
 ---
 
 ## History
 
-The auto_loop.py script injects the last 10 experiment rows here at runtime.
-If you see this placeholder, this is the first experiment — no history yet.
+The loop injects the last 10 attempts here at runtime. If you see this
+placeholder, this is the first iteration.

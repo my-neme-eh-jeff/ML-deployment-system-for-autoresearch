@@ -3,94 +3,151 @@ stages:
   preprocess:
     cmd: uv run python src/preprocess.py
     deps:
+    - path: configs/params.yaml
+      hash: md5
+      md5: 4ac3d009213f9ab72440ea93d40df525
+      size: 1374
     - path: data/churn_data.csv
       hash: md5
       md5: 0f9de68e012bd3aed5fa7cdc9fc421af
       size: 977501
     - path: src/preprocess.py
       hash: md5
-      md5: 1dd7de1c572aed66e41366094cd9a999
-      size: 1805
+      md5: 40620c6fc66bb5911c4add3f5518e819
+      size: 3082
     params:
       configs/params.yaml:
+        dataset:
+          csv_path: data/churn_data.csv
+          target_column: Churn
+          target_mapping:
+            Yes: 1
+            No: 0
+          drop_columns:
+          - customerID
+          numeric_features:
+          - tenure
+          categorical_features: []
         preprocess:
           test_size: 0.2
           random_state: 42
     outs:
     - path: data/processed/stats.json
       hash: md5
-      md5: 3dd8e3a9e3916a12da9aa3eb87999219
-      size: 499
+      md5: d5b31bab398220aaef7fa2fda6707776
+      size: 243
     - path: data/processed/test.csv
       hash: md5
-      md5: 019d3eabc2bbf0d78e070f868897c5ff
-      size: 177544
+      md5: 0b88cc96ed172fe12dc4d1112115ecaf
+      size: 6667
     - path: data/processed/train.csv
       hash: md5
-      md5: f12b2091277037cdc140fad5b54d6c94
-      size: 708275
+      md5: aeb0a9f91bfa7f45f0e0b24ab01044c1
+      size: 26720
   train:
     cmd: uv run python src/train.py
     deps:
     - path: data/processed/train.csv
       hash: md5
-      md5: f12b2091277037cdc140fad5b54d6c94
-      size: 708275
+      md5: aeb0a9f91bfa7f45f0e0b24ab01044c1
+      size: 26720
+    - path: src/features.py
+      hash: md5
+      md5: 24c90900de30d735a0ffbd462f2f5795
+      size: 1502
     - path: src/train.py
       hash: md5
-      md5: 2139f4b6e584d035ff9b92193f36cd27
-      size: 6463
+      md5: e9eeb0abd7ca41e959b788002069771d
+      size: 6134
     params:
       configs/params.yaml:
+        dataset:
+          csv_path: data/churn_data.csv
+          target_column: Churn
+          target_mapping:
+            Yes: 1
+            No: 0
+          drop_columns:
+          - customerID
+          numeric_features:
+          - tenure
+          categorical_features: []
         train:
-          model_type: RandomForestClassifier
+          model_type: DecisionTreeClassifier
           random_state: 42
+          max_depth: 1
+          max_features: 1
           n_estimators: 100
-          max_depth:
           min_samples_split: 2
           min_samples_leaf: 1
-          max_features: sqrt
           class_weight:
           bootstrap: true
           learning_rate: 0.1
           subsample: 1.0
           use_log_transform: false
-          add_charges_per_month: false
     outs:
-    - path: models/churn_model.pkl
+    - path: models/classifier.pkl
       hash: md5
-      md5: b60e679748f6697d5138699f62807f12
-      size: 19453108
+      md5: 7156621aa33e7b96957cf7c371b7bcf0
+      size: 2391
     - path: models/run_id.txt
       hash: md5
-      md5: ec26eb8a5b59e93ac358eec8e636ae03
+      md5: 0d1f017412261a94ab7ae182cf2dfb5c
       size: 32
   evaluate:
     cmd: uv run python src/evaluate.py
     deps:
     - path: data/processed/test.csv
       hash: md5
-      md5: 019d3eabc2bbf0d78e070f868897c5ff
-      size: 177544
-    - path: models/churn_model.pkl
+      md5: 0b88cc96ed172fe12dc4d1112115ecaf
+      size: 6667
+    - path: models/classifier.pkl
       hash: md5
-      md5: b60e679748f6697d5138699f62807f12
-      size: 19453108
+      md5: 7156621aa33e7b96957cf7c371b7bcf0
+      size: 2391
     - path: models/run_id.txt
       hash: md5
-      md5: ec26eb8a5b59e93ac358eec8e636ae03
+      md5: 0d1f017412261a94ab7ae182cf2dfb5c
       size: 32
     - path: src/evaluate.py
       hash: md5
-      md5: c5df7b483a07fa91ccfbb84c9613c385
-      size: 4241
+      md5: 3ed95e641280e4a32970d381e1fe5fc5
+      size: 4004
+    - path: src/features.py
+      hash: md5
+      md5: 24c90900de30d735a0ffbd462f2f5795
+      size: 1502
     params:
       configs/params.yaml:
+        dataset:
+          csv_path: data/churn_data.csv
+          target_column: Churn
+          target_mapping:
+            Yes: 1
+            No: 0
+          drop_columns:
+          - customerID
+          numeric_features:
+          - tenure
+          categorical_features: []
         evaluate:
           primary_metric: auc_roc
           auto_promote: true
+        train:
+          model_type: DecisionTreeClassifier
+          random_state: 42
+          max_depth: 1
+          max_features: 1
+          n_estimators: 100
+          min_samples_split: 2
+          min_samples_leaf: 1
+          class_weight:
+          bootstrap: true
+          learning_rate: 0.1
+          subsample: 1.0
+          use_log_transform: false
     outs:
     - path: metrics.json
       hash: md5
-      md5: 77fa753d258c2722bf901a9a374f034a
-      size: 104
+      md5: 693418b18a23bc03c0ee93ea4999b9d0
+      size: 94

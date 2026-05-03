@@ -1,7 +1,7 @@
 [project]
-name = "customer-churn"
+name = "ml-deployment-system-for-autoresearch"
 version = "0.1.0"
-description = "Add your description here"
+description = "Generic LLM-driven AutoML harness — plug a binary-classification CSV, watch autoresearch traverse from a bad baseline to a tuned model."
 requires-python = ">=3.12"
 dependencies = [
     "anthropic>=0.88.0",
