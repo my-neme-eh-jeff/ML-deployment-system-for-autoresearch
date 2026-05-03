@@ -152,10 +152,10 @@ jobs:
         run: uv sync
 
       - name: Compile Kubeflow Pipeline
-        run: uv run python pipelines/churn_pipeline.py
+        run: uv run python pipelines/pipeline.py
 
       - name: Upload pipeline artifact
         uses: actions/upload-artifact@v4
         with:
           name: kfp-pipeline
-          path: pipelines/churn_pipeline.yaml
+          path: pipelines/pipeline.yaml
