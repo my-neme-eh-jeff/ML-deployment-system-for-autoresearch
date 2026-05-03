@@ -129,13 +129,50 @@ def estimate_cost_usd(model: str, input_tokens: int, output_tokens: int) -> floa
     return (input_tokens * price["input"] + output_tokens * price["output"]) / 1_000_000
 
 
+# Anthropic tool-use schema. We force the model to call this tool, which
+# guarantees the output is a structured object matching the schema (no JSON
+# parsing fragility, no prose-before-JSON issues). Sonnet 4.6 explicitly
+# rejects assistant-prefill, so this is the production-correct approach.
+PROPOSAL_TOOL = {
+    "name": "propose_experiment",
+    "description": "Propose ONE focused change to improve AUC-ROC.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "rationale": {
+                "type": "string",
+                "description": "2-3 sentences explaining why this change should improve AUC-ROC.",
+            },
+            "change_type": {
+                "type": "string",
+                "enum": ["params_only", "train_py", "preprocess_py", "both_src"],
+            },
+            "experiment_name": {
+                "type": "string",
+                "description": "Short snake_case name; used as a commit message and MLflow run name.",
+            },
+            "params_yaml": {
+                "type": ["string", "null"],
+                "description": "Full new content of configs/params.yaml, or null if unchanged.",
+            },
+            "train_py": {
+                "type": ["string", "null"],
+                "description": "Full new content of src/train.py, or null if unchanged.",
+            },
+            "preprocess_py": {
+                "type": ["string", "null"],
+                "description": "Full new content of src/preprocess.py, or null if unchanged.",
+            },
+        },
+        "required": ["rationale", "change_type", "experiment_name"],
+    },
+}
+
+
 def call_claude(state: dict, model: str = "claude-sonnet-4-6") -> dict:
     client = anthropic.Anthropic()
 
-    system_prompt = f"""{state["program_md"]}
-
-CRITICAL: Return ONLY a valid JSON object. No markdown fences, no explanation outside the JSON.
-If you accidentally wrap it in ```json ... ```, the parser will strip the fences — but prefer clean JSON directly."""
+    system_prompt = state["program_md"]
 
     user_prompt = f"""## Current State (Experiment #{state["exp_num"]})
 
@@ -161,67 +198,48 @@ Current AUC-ROC in metrics.json: {state["current_auc"]:.4f}
 {state["history"]}
 
 ## Task
-Propose ONE specific change to improve AUC-ROC. Choose something not yet tried or something that failed for a different reason than what you'd try now. Return ONLY the JSON object."""
+Propose ONE specific change to improve AUC-ROC. Choose something not yet tried, or something that failed for a different reason than what you'd try now. Call the `propose_experiment` tool with your proposal."""
 
-    # Prefill the assistant turn with `{` so the model is forced to emit a JSON
-    # object first; otherwise newer Sonnet variants tend to write reasoning prose
-    # before the JSON, which the parser rejects.
     total_in = 0
     total_out = 0
+    last_err: Exception | None = None
     for attempt in range(3):
         try:
             response = client.messages.create(
                 model=model,
                 max_tokens=8192,
                 system=system_prompt,
-                messages=[
-                    {"role": "user", "content": user_prompt},
-                    {"role": "assistant", "content": "{"},
-                ],
+                tools=[PROPOSAL_TOOL],
+                tool_choice={"type": "tool", "name": "propose_experiment"},
+                messages=[{"role": "user", "content": user_prompt}],
             )
             total_in += getattr(response.usage, "input_tokens", 0) or 0
             total_out += getattr(response.usage, "output_tokens", 0) or 0
-            text = "{" + response.content[0].text
-            # Trim anything after the matching closing brace — model can stop
-            # mid-sentence if it hits max_tokens, but a well-formed JSON ends here.
-            depth = 0
-            in_string = False
-            escape = False
-            end = -1
-            for idx, ch in enumerate(text):
-                if escape:
-                    escape = False
-                    continue
-                if ch == "\\":
-                    escape = True
-                    continue
-                if ch == '"':
-                    in_string = not in_string
-                    continue
-                if in_string:
-                    continue
-                if ch == "{":
-                    depth += 1
-                elif ch == "}":
-                    depth -= 1
-                    if depth == 0:
-                        end = idx + 1
-                        break
-            if end > 0:
-                text = text[:end]
+
+            tool_use = next(
+                (b for b in response.content if getattr(b, "type", None) == "tool_use"),
+                None,
+            )
+            if tool_use is None:
+                raise RuntimeError(
+                    f"Model did not call the tool. stop_reason={response.stop_reason}, "
+                    f"content_types={[getattr(b, 'type', '?') for b in response.content]}"
+                )
             return {
-                "proposal": json.loads(text),
+                "proposal": dict(tool_use.input),
                 "input_tokens": total_in,
                 "output_tokens": total_out,
                 "cost_usd": estimate_cost_usd(model, total_in, total_out),
             }
-        except json.JSONDecodeError as e:
+        except Exception as e:
+            last_err = e
             if attempt == 2:
                 raise RuntimeError(
-                    f"Claude returned invalid JSON after 3 attempts: {e}\nResponse: {text[:500]}"
-                )
-            print(f"  [retry {attempt + 1}/3] JSON parse error, retrying...")
+                    f"Claude tool-use failed after 3 attempts: {e}"
+                ) from e
+            print(f"  [retry {attempt + 1}/3] {type(e).__name__}: {e}")
             time.sleep(2)
+    raise RuntimeError(f"Unreachable; last_err={last_err}")
 
 
 # ── Apply / revert ────────────────────────────────────────────────────────────
