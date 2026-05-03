@@ -130,14 +130,14 @@ deploymentSpec:
           \ run_id\n\n"
         image: ghcr.io/my-neme-eh-jeff/churn-kfp:latest
         resources:
-          cpuLimit: 0.5
-          cpuRequest: 0.2
-          memoryLimit: 1.073741824
-          memoryRequest: 0.536870912
-          resourceCpuLimit: 500m
-          resourceCpuRequest: 200m
-          resourceMemoryLimit: 1Gi
-          resourceMemoryRequest: 512Mi
+          cpuLimit: 1.0
+          cpuRequest: 0.3
+          memoryLimit: 3.221225472
+          memoryRequest: 1.073741824
+          resourceCpuLimit: '1'
+          resourceCpuRequest: 300m
+          resourceMemoryLimit: 3Gi
+          resourceMemoryRequest: 1Gi
     exec-preprocess:
       container:
         args:
@@ -183,14 +183,14 @@ deploymentSpec:
           \ / \"data\" / \"processed\" / \"stats.json\", stats.path)\n\n"
         image: ghcr.io/my-neme-eh-jeff/churn-kfp:latest
         resources:
-          cpuLimit: 0.5
-          cpuRequest: 0.2
-          memoryLimit: 1.073741824
-          memoryRequest: 0.536870912
-          resourceCpuLimit: 500m
-          resourceCpuRequest: 200m
-          resourceMemoryLimit: 1Gi
-          resourceMemoryRequest: 512Mi
+          cpuLimit: 1.0
+          cpuRequest: 0.3
+          memoryLimit: 3.221225472
+          memoryRequest: 1.073741824
+          resourceCpuLimit: '1'
+          resourceCpuRequest: 300m
+          resourceMemoryLimit: 3Gi
+          resourceMemoryRequest: 1Gi
     exec-train:
       container:
         args:
@@ -232,14 +232,14 @@ deploymentSpec:
           , run_id_artifact.path)\n\n"
         image: ghcr.io/my-neme-eh-jeff/churn-kfp:latest
         resources:
-          cpuLimit: 1.0
-          cpuRequest: 0.3
-          memoryLimit: 2.147483648
-          memoryRequest: 0.536870912
-          resourceCpuLimit: '1'
-          resourceCpuRequest: 300m
-          resourceMemoryLimit: 2Gi
-          resourceMemoryRequest: 512Mi
+          cpuLimit: 2.0
+          cpuRequest: 0.5
+          memoryLimit: 4.294967296
+          memoryRequest: 1.073741824
+          resourceCpuLimit: '2'
+          resourceCpuRequest: 500m
+          resourceMemoryLimit: 4Gi
+          resourceMemoryRequest: 1Gi
 pipelineInfo:
   description: "Full preprocess \u2192 train \u2192 evaluate DAG. params_yaml is the\
     \ entire file content."

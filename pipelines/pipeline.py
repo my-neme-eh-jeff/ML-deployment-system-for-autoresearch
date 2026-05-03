@@ -123,16 +123,19 @@ def classifier_pipeline(
         params_yaml=params_yaml,
         raw_data_gcs_path=raw_data_gcs_path,
     )
-    preprocess_task.set_cpu_request("200m").set_memory_request("512Mi")
-    preprocess_task.set_cpu_limit("500m").set_memory_limit("1Gi")
+    # Memory budgets sized for the 200K × 339 IEEE-CIS subsample. Pandas DF
+    # ~800 MB, peaks higher during sklearn fit. 1 GiB OOM'd silently at the OS
+    # level (exit 137) on the previous run.
+    preprocess_task.set_cpu_request("300m").set_memory_request("1Gi")
+    preprocess_task.set_cpu_limit("1").set_memory_limit("3Gi")
 
     train_task = train(
         params_yaml=params_yaml,
         train_csv=preprocess_task.outputs["train_csv"],
         mlflow_tracking_uri=mlflow_tracking_uri,
     )
-    train_task.set_cpu_request("300m").set_memory_request("512Mi")
-    train_task.set_cpu_limit("1").set_memory_limit("2Gi")
+    train_task.set_cpu_request("500m").set_memory_request("1Gi")
+    train_task.set_cpu_limit("2").set_memory_limit("4Gi")
 
     evaluate_task = evaluate(
         params_yaml=params_yaml,
@@ -141,8 +144,8 @@ def classifier_pipeline(
         run_id_artifact=train_task.outputs["run_id_artifact"],
         mlflow_tracking_uri=mlflow_tracking_uri,
     )
-    evaluate_task.set_cpu_request("200m").set_memory_request("512Mi")
-    evaluate_task.set_cpu_limit("500m").set_memory_limit("1Gi")
+    evaluate_task.set_cpu_request("300m").set_memory_request("1Gi")
+    evaluate_task.set_cpu_limit("1").set_memory_limit("3Gi")
 
 
 if __name__ == "__main__":
