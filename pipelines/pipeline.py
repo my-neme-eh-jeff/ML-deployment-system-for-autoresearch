@@ -1,15 +1,15 @@
 """KFP pipeline that mirrors the DVC stages (preprocess → train → evaluate).
 
 Each component shells out to the matching src/*.py so DVC and KFP run the same
-code. Compile with `uv run python pipelines/churn_pipeline.py`; add `--run` to
-submit one run to a KFP host (`--host http://...`).
+code. Compile with `uv run python pipelines/pipeline.py`; add `--run` to submit
+one run to a KFP host (`--host http://...`).
 """
 
 import argparse
 
 from kfp import compiler, dsl
 
-BASE_IMAGE = "ghcr.io/my-neme-eh-jeff/churn-kfp:latest"
+BASE_IMAGE = "ghcr.io/my-neme-eh-jeff/pipeline-kfp:latest"
 
 
 @dsl.component(base_image=BASE_IMAGE)
@@ -32,6 +32,7 @@ def preprocess(
 
     raw = pd.read_csv(raw_data_gcs_path)
     (workdir / "data").mkdir(parents=True, exist_ok=True)
+    # The path here matches the params.yaml `dataset.csv_path` default.
     raw.to_csv(workdir / "data" / "churn_data.csv", index=False)
 
     subprocess.run(["python", "src/preprocess.py"], cwd=str(workdir), check=True)
@@ -64,7 +65,7 @@ def train(
     env = {**os.environ, "MLFLOW_TRACKING_URI": mlflow_tracking_uri}
     subprocess.run(["python", "src/train.py"], cwd=str(workdir), check=True, env=env)
 
-    shutil.copy(workdir / "models" / "churn_model.pkl", model_artifact.path)
+    shutil.copy(workdir / "models" / "classifier.pkl", model_artifact.path)
     shutil.copy(workdir / "models" / "run_id.txt", run_id_artifact.path)
 
 
@@ -90,7 +91,7 @@ def evaluate(
     (workdir / "data" / "processed").mkdir(parents=True, exist_ok=True)
     (workdir / "models").mkdir(parents=True, exist_ok=True)
     shutil.copy(test_csv.path, workdir / "data" / "processed" / "test.csv")
-    shutil.copy(model_artifact.path, workdir / "models" / "churn_model.pkl")
+    shutil.copy(model_artifact.path, workdir / "models" / "classifier.pkl")
     shutil.copy(run_id_artifact.path, workdir / "models" / "run_id.txt")
 
     env = {**os.environ, "MLFLOW_TRACKING_URI": mlflow_tracking_uri}
@@ -104,8 +105,8 @@ def evaluate(
     return run_id
 
 
-@dsl.pipeline(name="churn-prediction-pipeline")
-def churn_pipeline(
+@dsl.pipeline(name="classifier-training-pipeline")
+def classifier_pipeline(
     params_yaml: str,
     raw_data_gcs_path: str = "gs://customer-churn-dvc-remote/raw/churn_data.csv",
     mlflow_tracking_uri: str = "http://mlflow.mlflow.svc.cluster.local:5000",
@@ -145,8 +146,8 @@ if __name__ == "__main__":
     parser.add_argument("--host", default="http://localhost:8080", help="KFP host URL")
     args = parser.parse_args()
 
-    output_path = "pipelines/churn_pipeline.yaml"
-    compiler.Compiler().compile(churn_pipeline, output_path)
+    output_path = "pipelines/pipeline.yaml"
+    compiler.Compiler().compile(classifier_pipeline, output_path)
 
     print(f"Pipeline compiled to {output_path}")
 
@@ -161,6 +162,6 @@ if __name__ == "__main__":
             arguments={
                 "params_yaml": Path("configs/params.yaml").read_text(),
             },
-            run_name="churn-prediction-run",
+            run_name="classifier-training-run",
         )
         print(f"Run submitted: {run.run_id}")

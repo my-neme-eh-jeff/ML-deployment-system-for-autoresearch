@@ -1,35 +1,44 @@
+# Schema for the dataset. Swap this block to plug in a new binary-classification CSV.
+# preprocess / train / evaluate all read from here — no hardcoded column names elsewhere.
+dataset:
+  csv_path: data/churn_data.csv
+  target_column: Churn
+  # If the target is "Yes"/"No", "T"/"F", etc. — provide the mapping here. Omit if already 0/1.
+  # Keys MUST be quoted: PyYAML parses bare Yes/No/On/Off as booleans.
+  target_mapping: {"Yes": 1, "No": 0}
+  drop_columns: [customerID]
+  # Bad baseline: a single numeric feature, no categoricals. Autoresearch is meant to
+  # expand both lists. The dataset has more columns available; see data/processed/stats.json.
+  numeric_features: [tenure]
+  categorical_features: []
+
 preprocess:
   test_size: 0.2
   random_state: 42
 
 train:
-  # Core estimator — Claude can swap this
-  model_type: HistGradientBoostingClassifier  # RandomForestClassifier | GradientBoostingClassifier | HistGradientBoostingClassifier | ExtraTreesClassifier
+  # Intentionally weak baseline. Autoresearch traverses out from here.
+  model_type: DecisionTreeClassifier
   random_state: 42
+  max_depth: 1
+  max_features: 1
 
-  # RandomForest / ExtraTrees knobs
-  n_estimators: 200
-  max_depth: null           # null = unlimited
+  # Knobs the autoresearch loop may flip on
+  n_estimators: 100
   min_samples_split: 2
   min_samples_leaf: 1
-  max_features: sqrt        # "sqrt", "log2", or float
-  class_weight: null        # null, "balanced", "balanced_subsample"
+  class_weight: null
   bootstrap: true
-
-  # GradientBoosting / HistGradientBoosting knobs (ignored for RF/ExtraTrees)
-  learning_rate: 0.05
+  learning_rate: 0.1
   subsample: 1.0
-
-  # Feature engineering flags — train.py reads these
-  use_log_transform: false      # log1p(MonthlyCharges) and log1p(TotalCharges)
-  add_charges_per_month: false  # new feature: TotalCharges / (tenure + 1)
+  use_log_transform: false
 
 evaluate:
   primary_metric: auc_roc
   auto_promote: true
 
-# This section is read ONLY by auto_experiment/auto_loop.py.
-# It is NOT referenced in dvc.yaml, so it never invalidates DVC stages.
+# Read only by auto_experiment/auto_loop.py. NOT a DVC dep, so editing this never
+# invalidates DVC stages.
 auto_experiment:
-  baseline_auc: 0.8162
+  baseline_auc: 0.0
   min_improvement: 0.001

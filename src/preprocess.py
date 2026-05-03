@@ -1,4 +1,4 @@
-"""Preprocess raw churn data into train/test splits."""
+"""Generic CSV preprocessor — schema is read from configs/params.yaml."""
 
 import json
 from pathlib import Path
@@ -7,39 +7,62 @@ import pandas as pd
 import yaml
 from sklearn.model_selection import train_test_split
 
-TARGET = "Churn"
 
-
-def load_params():
-    with open("configs/params.yaml") as f:
+def load_params(params_path: str = "configs/params.yaml") -> dict:
+    with open(params_path) as f:
         return yaml.safe_load(f)
 
 
 def preprocess(
-    input_path: str = "data/churn_data.csv",
     output_dir: str = "data/processed",
+    params_path: str = "configs/params.yaml",
+    input_path: str | None = None,
     test_size: float | None = None,
     seed: int | None = None,
 ):
-    if test_size is None or seed is None:
-        params = load_params()["preprocess"]
-        test_size = test_size or params["test_size"]
-        seed = seed or params["random_state"]
-    df = pd.read_csv(input_path)
+    params = load_params(params_path)
+    dataset = params["dataset"]
+    pre = params["preprocess"]
 
-    # Clean TotalCharges (has some blank strings)
-    df["TotalCharges"] = pd.to_numeric(df["TotalCharges"], errors="coerce")
-    df["TotalCharges"] = df["TotalCharges"].fillna(df["TotalCharges"].median())
+    csv_path = input_path or dataset["csv_path"]
+    test_size = test_size if test_size is not None else pre["test_size"]
+    seed = seed if seed is not None else pre["random_state"]
 
-    # Encode target: Yes=1, No=0
-    df[TARGET] = df[TARGET].map({"Yes": 1, "No": 0})
+    df = pd.read_csv(csv_path)
 
-    # Drop customer ID
-    df = df.drop(columns=["customerID"])
+    target_col = dataset["target_column"]
+    numeric = list(dataset.get("numeric_features", []))
+    categorical = list(dataset.get("categorical_features", []))
+    drop = list(dataset.get("drop_columns", []))
 
-    # Split
+    # Coerce numeric columns to float and median-fill any NaNs that result —
+    # handles "blank" strings and similar quirks generically.
+    for col in numeric:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+            df[col] = df[col].fillna(df[col].median())
+
+    target_mapping = dataset.get("target_mapping")
+    if target_mapping:
+        df[target_col] = df[target_col].map(target_mapping)
+
+    for col in drop:
+        if col in df.columns:
+            df = df.drop(columns=[col])
+
+    # Keep only the columns the rest of the pipeline declares it cares about.
+    keep = [target_col, *numeric, *categorical]
+    missing = [c for c in keep if c not in df.columns]
+    if missing:
+        raise ValueError(
+            f"Columns declared in params.dataset are missing from {csv_path}: {missing}"
+        )
+    df = df[keep]
+
+    # Stratify only when the target has at least two classes with multiple rows.
+    stratify = df[target_col] if df[target_col].nunique() > 1 else None
     train_df, test_df = train_test_split(
-        df, test_size=test_size, random_state=seed, stratify=df[TARGET]
+        df, test_size=test_size, random_state=seed, stratify=stratify
     )
 
     out = Path(output_dir)
@@ -51,12 +74,17 @@ def preprocess(
         "total_rows": len(df),
         "train_rows": len(train_df),
         "test_rows": len(test_df),
-        "churn_rate": float(df[TARGET].mean()),
-        "features": [c for c in df.columns if c != TARGET],
+        "positive_rate": float(df[target_col].mean()),
+        "target_column": target_col,
+        "numeric_features": numeric,
+        "categorical_features": categorical,
+        "all_columns": [c for c in df.columns if c != target_col],
     }
     (out / "stats.json").write_text(json.dumps(stats, indent=2))
     print(
-        f"Train: {len(train_df)}, Test: {len(test_df)}, Churn rate: {stats['churn_rate']:.2%}"
+        f"Train: {len(train_df)}, Test: {len(test_df)}, "
+        f"positive rate: {stats['positive_rate']:.2%}, "
+        f"features: {len(numeric)} numeric + {len(categorical)} categorical"
     )
 
 

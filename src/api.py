@@ -1,8 +1,9 @@
-"""FastAPI inference server for churn prediction."""
+"""FastAPI inference server. Loads the @champion classifier from MLflow."""
 
 import logging
 import os
 import threading
+from typing import Any
 
 import mlflow.sklearn
 import pandas as pd
@@ -14,84 +15,80 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5000")
-MODEL_URI = "models:/churn-model@champion"
+MODEL_NAME = os.getenv("MODEL_NAME", "classifier")
+MODEL_URI = f"models:/{MODEL_NAME}@champion"
 
 mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
 
-app = FastAPI(title="Churn Prediction API")
+app = FastAPI(title="ML Deployment System for Autoresearch — Inference API")
 model = None
+model_version: str | None = None
 
 
-class CustomerInput(BaseModel):
-    gender: str
-    SeniorCitizen: int
-    Partner: str
-    Dependents: str
-    tenure: int
-    PhoneService: str
-    MultipleLines: str
-    InternetService: str
-    OnlineSecurity: str
-    OnlineBackup: str
-    DeviceProtection: str
-    TechSupport: str
-    StreamingTV: str
-    StreamingMovies: str
-    Contract: str
-    PaperlessBilling: str
-    PaymentMethod: str
-    MonthlyCharges: float
-    TotalCharges: float
+class PredictRequest(BaseModel):
+    """Generic single-row predict request. `data` is one row keyed by column name.
+
+    The sklearn pipeline saved in MLflow encodes the schema; column mismatches
+    surface as a 422-shaped error from the model itself.
+    """
+
+    data: dict[str, Any]
 
 
 def _load_model_in_background():
-    global model
+    global model, model_version
     try:
-        logger.info(f"Loading champion model from {MLFLOW_TRACKING_URI} ...")
+        logger.info(f"Loading {MODEL_URI} from {MLFLOW_TRACKING_URI} ...")
         model = mlflow.sklearn.load_model(MODEL_URI)
-        logger.info("Champion model loaded successfully.")
+        try:
+            client = mlflow.MlflowClient()
+            v = client.get_model_version_by_alias(MODEL_NAME, "champion")
+            model_version = v.version
+            logger.info(f"Loaded {MODEL_NAME} v{model_version}.")
+        except Exception:
+            logger.info("Loaded model (version metadata unavailable).")
     except Exception as e:
-        logger.error(
-            f"Failed to load model: {e}. /health will return 503 until resolved."
-        )
+        logger.error(f"Failed to load model: {e}. /health stays 503.")
 
 
 @app.on_event("startup")
 def load_model():
-    # Run in a background thread so uvicorn binds to the port immediately.
-    # Health returns 503 while loading (pod alive, not ready) → readiness probe
-    # fails gracefully instead of the liveness probe seeing connection refused.
     threading.Thread(target=_load_model_in_background, daemon=True).start()
 
 
 @app.get("/health/live")
 def liveness():
-    """Liveness probe — is the process running? Always 200 if uvicorn is up."""
     return {"status": "alive"}
 
 
 @app.get("/health")
 def health():
-    """Readiness probe — is the model loaded and ready for traffic?"""
     if model is None:
         return JSONResponse(
             status_code=503,
             content={"status": "unavailable", "model_loaded": False},
         )
-    return {"status": "healthy", "model_loaded": True}
+    return {"status": "healthy", "model_loaded": True, "model_version": model_version}
 
 
 @app.post("/predict")
-def predict(customer: CustomerInput):
+def predict(req: PredictRequest):
     if model is None:
         return JSONResponse(
             status_code=503,
             content={"error": "Model not loaded. Check /health for status."},
         )
-    df = pd.DataFrame([customer.model_dump()])
-    prediction = model.predict(df)[0]
-    probability = model.predict_proba(df)[0][1]
+    try:
+        df = pd.DataFrame([req.data])
+        prediction = int(model.predict(df)[0])
+        probability = float(model.predict_proba(df)[0][1])
+    except Exception as e:
+        return JSONResponse(
+            status_code=422,
+            content={"error": f"Prediction failed: {e}"},
+        )
     return {
-        "churn": int(prediction),
-        "churn_probability": round(float(probability), 4),
+        "prediction": prediction,
+        "probability": round(probability, 4),
+        "model_version": model_version,
     }

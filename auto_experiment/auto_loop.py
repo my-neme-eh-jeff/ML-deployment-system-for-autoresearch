@@ -335,7 +335,7 @@ def run_pipeline_kfp(timeout: int = 900) -> dict:
     kfp_host = os.environ.get(
         "KFP_HOST", "http://ml-pipeline.kubeflow.svc.cluster.local:8888"
     )
-    pipeline_yaml = PROJECT_ROOT / "pipelines" / "churn_pipeline.yaml"
+    pipeline_yaml = PROJECT_ROOT / "pipelines" / "pipeline.yaml"
     if not pipeline_yaml.exists():
         return {
             "success": False,
@@ -382,7 +382,7 @@ def run_pipeline_kfp(timeout: int = 900) -> dict:
     try:
         mlflow.set_tracking_uri(os.environ["MLFLOW_TRACKING_URI"])
         runs = mlflow.search_runs(
-            experiment_names=["churn-prediction"],
+            experiment_names=["training"],
             order_by=["start_time DESC"],
             max_results=1,
         )

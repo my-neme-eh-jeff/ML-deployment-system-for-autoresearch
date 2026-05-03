@@ -2,7 +2,7 @@
 
 import mlflow
 
-MODEL_NAME = "churn-model"
+MODEL_NAME = "classifier"
 
 
 def promote():

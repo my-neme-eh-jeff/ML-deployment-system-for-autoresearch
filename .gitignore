@@ -36,3 +36,5 @@ BRAINSTORM.md
 .specstory/
 .claude/
 lessons.md
+mlflow.db
+mlflow_artifacts/

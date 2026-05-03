@@ -42,7 +42,7 @@ lint:
 	uv run ruff format --check src/ tests/ pipelines/
 
 compile-kfp:
-	uv run python pipelines/churn_pipeline.py
+	uv run python pipelines/pipeline.py
 
 clean:
 	rm -rf data/processed models metrics.json
@@ -182,11 +182,11 @@ gke-urls:
 	@echo "MLflow UI:   http://$$(kubectl get svc mlflow -n mlflow -o jsonpath='{.status.loadBalancer.ingress[0].ip}'):5000"
 	@echo "ArgoCD UI:   http://$$(kubectl get svc argocd-server -n argocd -o jsonpath='{.status.loadBalancer.ingress[0].ip}')"
 	@echo "KFP UI:      http://$$(kubectl get svc ml-pipeline-ui -n kubeflow -o jsonpath='{.status.loadBalancer.ingress[0].ip}')"
-	@echo "Churn API:   http://$$(kubectl get svc churn-api -n churn-serving -o jsonpath='{.status.loadBalancer.ingress[0].ip}')/predict"
+	@echo "Inference API: http://$$(kubectl get svc churn-api -n churn-serving -o jsonpath='{.status.loadBalancer.ingress[0].ip}')/predict"
 
 kfp-run:
 	MLFLOW_TRACKING_URI=http://$$(kubectl get svc mlflow -n mlflow -o jsonpath='{.status.loadBalancer.ingress[0].ip}'):5000 \
-	uv run python pipelines/churn_pipeline.py \
+	uv run python pipelines/pipeline.py \
 		--run \
 		--host http://$$(kubectl get svc ml-pipeline-ui -n kubeflow -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
 
@@ -244,7 +244,7 @@ deploy-argocd:
 
 argocd-ui:
 	@echo "ArgoCD UI:  http://$$(kubectl get svc argocd-server -n argocd -o jsonpath='{.status.loadBalancer.ingress[0].ip}')"
-	@echo "Churn API:  http://$$(kubectl get svc churn-api -n churn-serving -o jsonpath='{.status.loadBalancer.ingress[0].ip}')/health"
+	@echo "Inference API: http://$$(kubectl get svc churn-api -n churn-serving -o jsonpath='{.status.loadBalancer.ingress[0].ip}')/health"
 
 argocd-password:
 	@kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d; echo

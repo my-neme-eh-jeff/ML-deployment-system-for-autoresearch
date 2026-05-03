@@ -2,11 +2,72 @@
 
 import pandas as pd
 import pytest
+import yaml
+
+
+# Full Telco schema as a `dataset:` block — used by every test that wants the
+# whole schema rather than the bad-baseline single-feature setup that
+# configs/params.yaml ships with.
+TELCO_PARAMS = {
+    "dataset": {
+        "csv_path": "data/churn_data.csv",
+        "target_column": "Churn",
+        "target_mapping": {"Yes": 1, "No": 0},
+        "drop_columns": ["customerID"],
+        "numeric_features": [
+            "SeniorCitizen",
+            "tenure",
+            "MonthlyCharges",
+            "TotalCharges",
+        ],
+        "categorical_features": [
+            "gender",
+            "Partner",
+            "Dependents",
+            "PhoneService",
+            "MultipleLines",
+            "InternetService",
+            "OnlineSecurity",
+            "OnlineBackup",
+            "DeviceProtection",
+            "TechSupport",
+            "StreamingTV",
+            "StreamingMovies",
+            "Contract",
+            "PaperlessBilling",
+            "PaymentMethod",
+        ],
+    },
+    "preprocess": {"test_size": 0.2, "random_state": 42},
+    "train": {
+        "model_type": "RandomForestClassifier",
+        "n_estimators": 10,
+        "random_state": 42,
+        "max_depth": None,
+        "min_samples_split": 2,
+        "min_samples_leaf": 1,
+        "max_features": "sqrt",
+        "class_weight": None,
+        "bootstrap": True,
+        "learning_rate": 0.1,
+        "subsample": 1.0,
+        "use_log_transform": False,
+        "add_charges_per_month": False,
+    },
+    "evaluate": {"primary_metric": "auc_roc", "auto_promote": True},
+}
+
+
+@pytest.fixture
+def telco_params(tmp_path):
+    p = tmp_path / "params.yaml"
+    p.write_text(yaml.dump(TELCO_PARAMS))
+    return p
 
 
 @pytest.fixture
 def sample_raw_data(tmp_path):
-    """Create a small raw dataset matching the Kaggle schema."""
+    """Tiny Telco-shaped CSV — six rows is enough for the schema tests."""
     df = pd.DataFrame(
         {
             "customerID": ["C001", "C002", "C003", "C004", "C005", "C006"],
@@ -59,10 +120,14 @@ def sample_raw_data(tmp_path):
 
 
 @pytest.fixture
-def sample_processed_data(tmp_path, sample_raw_data):
-    """Run preprocessing and return the output directory."""
+def sample_processed_data(tmp_path, sample_raw_data, telco_params):
+    """Run preprocessing with the Telco schema and return the output directory."""
     from src.preprocess import preprocess
 
     out_dir = str(tmp_path / "processed")
-    preprocess(input_path=str(sample_raw_data), output_dir=out_dir)
+    preprocess(
+        input_path=str(sample_raw_data),
+        output_dir=out_dir,
+        params_path=str(telco_params),
+    )
     return tmp_path / "processed"

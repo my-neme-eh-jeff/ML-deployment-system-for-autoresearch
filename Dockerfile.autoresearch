@@ -22,8 +22,8 @@ COPY data/.gitignore data/churn_data.csv.dvc data/
 COPY data/processed/.gitignore data/processed/stats.json data/processed/
 
 # Compile the KFP pipeline at build time so each iteration can submit directly.
-RUN /app/.venv/bin/python pipelines/churn_pipeline.py && \
-    test -f pipelines/churn_pipeline.yaml
+RUN /app/.venv/bin/python pipelines/pipeline.py && \
+    test -f pipelines/pipeline.yaml
 
 COPY scripts/run-autoresearch.sh /usr/local/bin/run-autoresearch
 RUN chmod +x /usr/local/bin/run-autoresearch
