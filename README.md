@@ -286,4 +286,5 @@ A pet project to learn MLOps end-to-end. Not a 5-nines production deployment.
 - Single zone. A zone outage takes everything down.
 - Free-trial GCP credits, so the public IPs are stable per cluster lifetime but not forever.
 - No data-drift monitoring, no auto-retraining triggers. **Autoresearch is the retraining mechanism.**
+  - The autoresearch loop has currently no ```min_iterations_since_improvement``` stop condition for runs once progress has stagnated
 - No model-serving benchmarking (TTFT, P99). Separate project.
