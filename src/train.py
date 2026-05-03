@@ -79,6 +79,11 @@ def _build_classifier(params: dict):
             max_iter=params.get("n_estimators", 100),
             learning_rate=params.get("learning_rate", 0.1),
             max_depth=params.get("max_depth") or None,
+            min_samples_leaf=params.get("min_samples_leaf", 20),
+            l2_regularization=params.get("l2_regularization", 0.0),
+            early_stopping=params.get("early_stopping", False),
+            validation_fraction=params.get("validation_fraction", 0.1),
+            n_iter_no_change=params.get("n_iter_no_change", 10),
             random_state=rs,
         )
     if model_type == "LogisticRegression":
