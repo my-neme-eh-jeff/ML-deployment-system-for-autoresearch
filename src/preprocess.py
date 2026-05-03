@@ -56,13 +56,22 @@ def preprocess(
     if target_mapping:
         df[target_col] = df[target_col].map(target_mapping)
 
-    # Keep only the columns the rest of the pipeline declares it cares about.
-    keep = [target_col, *numeric, *categorical]
-    missing = [c for c in keep if c not in df.columns]
-    if missing:
+    if target_col not in df.columns:
         raise ValueError(
-            f"Columns declared in params.dataset are missing from {csv_path}: {missing}"
+            f"Required target column {target_col!r} missing from {csv_path}"
         )
+    # Capture the full available catalog before we filter, so stats.json can
+    # carry the full column list to downstream consumers.
+    available_columns = [c for c in df.columns if c != target_col]
+    missing = [c for c in numeric + categorical if c not in df.columns]
+    if missing:
+        print(
+            f"WARNING: dropping {len(missing)} missing column(s) from schema: "
+            f"{missing[:10]}{'...' if len(missing) > 10 else ''}"
+        )
+    numeric = [c for c in numeric if c in df.columns]
+    categorical = [c for c in categorical if c in df.columns]
+    keep = [target_col, *numeric, *categorical]
     df = df[keep]
 
     # Stratify only when the target has at least two classes with multiple rows.
@@ -84,7 +93,7 @@ def preprocess(
         "target_column": target_col,
         "numeric_features": numeric,
         "categorical_features": categorical,
-        "all_columns": [c for c in df.columns if c != target_col],
+        "all_columns": available_columns,
     }
     (out / "stats.json").write_text(json.dumps(stats, indent=2))
     print(
