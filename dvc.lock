@@ -5,16 +5,16 @@ stages:
     deps:
     - path: configs/params.yaml
       hash: md5
-      md5: 1f30f9feb942b75f17a6bb70291b9af7
-      size: 1380
+      md5: 9474a3be11d7eab6c58cbba4b080fd34
+      size: 624
     - path: data/ieee_cis.parquet
       hash: md5
       md5: ba46a18a224f82711e6a91ec8dd45ad2
       size: 29751989
     - path: src/preprocess.py
       hash: md5
-      md5: 6490cffd040ff3fc8c606db3039b4046
-      size: 4246
+      md5: e935af9d66089fad98d7d67c5381c2f2
+      size: 3311
     params:
       configs/params.yaml:
         dataset:
@@ -25,31 +25,30 @@ stages:
           - TransactionDT
           numeric_features:
           - TransactionAmt
-          categorical_features:
-          - ProductCD
+          categorical_features: []
         preprocess:
           test_size: 0.2
           random_state: 42
     outs:
     - path: data/processed/stats.json
       hash: md5
-      md5: bef248a2d1249613a75936ba93379f47
-      size: 4791
+      md5: 0f408ddaa40ae08ea4b93ffbe292dd8c
+      size: 255
     - path: data/processed/test.csv
       hash: md5
-      md5: 2338b22096fc013702c1590b248e667b
-      size: 398614
+      md5: 2c042b2d2adab540c1b8335d1625b302
+      size: 318604
     - path: data/processed/train.csv
       hash: md5
-      md5: 3371e14f582b7082ca39d533e25a23fa
-      size: 1593586
+      md5: 4ce21978fb14b1a2df7c81bc34fdf5f8
+      size: 1273576
   train:
     cmd: uv run python src/train.py
     deps:
     - path: data/processed/train.csv
       hash: md5
-      md5: 3371e14f582b7082ca39d533e25a23fa
-      size: 1593586
+      md5: 4ce21978fb14b1a2df7c81bc34fdf5f8
+      size: 1273576
     - path: src/features.py
       hash: md5
       md5: 24c90900de30d735a0ffbd462f2f5795
@@ -68,44 +67,43 @@ stages:
           - TransactionDT
           numeric_features:
           - TransactionAmt
-          categorical_features:
-          - ProductCD
+          categorical_features: []
         train:
-          model_type: DecisionTreeClassifier
+          model_type: HistGradientBoostingClassifier
           random_state: 42
-          max_depth:
-          max_features:
-          n_estimators: 100
+          max_depth: 6
+          n_estimators: 200
+          learning_rate: 0.05
+          subsample: 1.0
           min_samples_split: 2
           min_samples_leaf: 1
           class_weight:
           bootstrap: true
-          learning_rate: 0.1
-          subsample: 1.0
+          max_features: 1
           use_log_transform: false
     outs:
     - path: models/classifier.pkl
       hash: md5
-      md5: 147ed0877a933e0f1e209060efdab285
-      size: 429835
+      md5: 78e0bb3d9797f451beda8e6b72b7d2a9
+      size: 327504
     - path: models/run_id.txt
       hash: md5
-      md5: 9435efc400a5a29d699b806c30c0bd1f
+      md5: 89104db287e09bcfed18fda8e4a6f5e5
       size: 32
   evaluate:
     cmd: uv run python src/evaluate.py
     deps:
     - path: data/processed/test.csv
       hash: md5
-      md5: 2338b22096fc013702c1590b248e667b
-      size: 398614
+      md5: 2c042b2d2adab540c1b8335d1625b302
+      size: 318604
     - path: models/classifier.pkl
       hash: md5
-      md5: 147ed0877a933e0f1e209060efdab285
-      size: 429835
+      md5: 78e0bb3d9797f451beda8e6b72b7d2a9
+      size: 327504
     - path: models/run_id.txt
       hash: md5
-      md5: 9435efc400a5a29d699b806c30c0bd1f
+      md5: 89104db287e09bcfed18fda8e4a6f5e5
       size: 32
     - path: src/evaluate.py
       hash: md5
@@ -125,26 +123,25 @@ stages:
           - TransactionDT
           numeric_features:
           - TransactionAmt
-          categorical_features:
-          - ProductCD
+          categorical_features: []
         evaluate:
           primary_metric: auc_roc
           auto_promote: true
         train:
-          model_type: DecisionTreeClassifier
+          model_type: HistGradientBoostingClassifier
           random_state: 42
-          max_depth:
-          max_features:
-          n_estimators: 100
+          max_depth: 6
+          n_estimators: 200
+          learning_rate: 0.05
+          subsample: 1.0
           min_samples_split: 2
           min_samples_leaf: 1
           class_weight:
           bootstrap: true
-          learning_rate: 0.1
-          subsample: 1.0
+          max_features: 1
           use_log_transform: false
     outs:
     - path: metrics.json
       hash: md5
-      md5: 7e1f857f115c51676b2b7a27f5765109
-      size: 103
+      md5: af87a5b4336ae9075eced4dc6c1e7ed3
+      size: 94

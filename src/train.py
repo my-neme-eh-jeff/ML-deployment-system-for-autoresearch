@@ -1,5 +1,10 @@
-"""Train a binary classifier — schema and hyperparameters from configs/params.yaml."""
+"""Train a binary classifier — schema and hyperparameters from configs/params.yaml.
 
+Extended to read auto-discovered features from data/processed/stats.json
+so the ColumnTransformer uses the same columns that preprocess.py wrote.
+"""
+
+import json
 import pickle
 from pathlib import Path
 
@@ -90,11 +95,35 @@ def _build_classifier(params: dict):
         )
 
 
-def build_pipeline(dataset: dict, params: dict) -> Pipeline:
-    numeric = list(dataset.get("numeric_features", [])) + derived_numeric_features(
-        params
-    )
-    categorical = list(dataset.get("categorical_features", []))
+def _load_feature_lists(
+    dataset: dict, stats_path: str = "data/processed/stats.json"
+) -> tuple[list, list]:
+    """Load feature lists from stats.json (written by preprocess.py) if available,
+    falling back to params.yaml declarations."""
+    try:
+        with open(stats_path) as f:
+            stats = json.load(f)
+        numeric = stats.get("numeric_features") or list(
+            dataset.get("numeric_features", [])
+        )
+        categorical = stats.get("categorical_features") or list(
+            dataset.get("categorical_features", [])
+        )
+        print(
+            f"Loaded {len(numeric)} numeric and {len(categorical)} categorical features from stats.json"
+        )
+        return numeric, categorical
+    except (FileNotFoundError, KeyError):
+        return list(dataset.get("numeric_features", [])), list(
+            dataset.get("categorical_features", [])
+        )
+
+
+def build_pipeline(
+    dataset: dict, params: dict, stats_path: str = "data/processed/stats.json"
+) -> Pipeline:
+    numeric, categorical = _load_feature_lists(dataset, stats_path)
+    numeric = numeric + derived_numeric_features(params)
 
     if params.get("use_log_transform"):
         numeric_transformer = Pipeline(
@@ -147,7 +176,8 @@ def train(
     y = df[target]
     X = apply_feature_engineering(X, params)
 
-    pipeline = build_pipeline(dataset, params)
+    stats_path = str(Path(train_path).parent / "stats.json")
+    pipeline = build_pipeline(dataset, params, stats_path=stats_path)
 
     mlflow.set_experiment(EXPERIMENT_NAME)
     with mlflow.start_run(run_name="train") as run:

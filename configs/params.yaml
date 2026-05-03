@@ -3,32 +3,30 @@ dataset:
   target_column: isFraud
   drop_columns: [TransactionID, TransactionDT]
   numeric_features: [TransactionAmt]
-  categorical_features: [ProductCD]
+  categorical_features: []
 
 preprocess:
   test_size: 0.2
   random_state: 42
 
 train:
-  model_type: DecisionTreeClassifier
+  model_type: HistGradientBoostingClassifier
   random_state: 42
-  max_depth: null
-  max_features: null
-  n_estimators: 100
+  max_depth: 6
+  n_estimators: 200
+  learning_rate: 0.05
+  subsample: 1.0
   min_samples_split: 2
   min_samples_leaf: 1
   class_weight: null
   bootstrap: true
-  learning_rate: 0.1
-  subsample: 1.0
+  max_features: 1
   use_log_transform: false
 
 evaluate:
   primary_metric: auc_roc
   auto_promote: true
 
-# Read only by auto_experiment/auto_loop.py. Editing this never invalidates
-# DVC stages because it's not declared as a `params:` dependency in dvc.yaml.
 auto_experiment:
   baseline_auc: 0.0
   min_improvement: 0.001
