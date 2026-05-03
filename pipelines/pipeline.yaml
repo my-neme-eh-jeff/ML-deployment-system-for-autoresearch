@@ -128,7 +128,7 @@ deploymentSpec:
           \ / \"run_id.txt\").read_text().strip()\n    print(f\"MLflow run_id: {run_id}\"\
           )\n    print(f\"Metrics: {Path(metrics.path).read_text()}\")\n    return\
           \ run_id\n\n"
-        image: ghcr.io/my-neme-eh-jeff/pipeline-kfp:latest
+        image: ghcr.io/my-neme-eh-jeff/churn-kfp:latest
         resources:
           cpuLimit: 0.5
           cpuRequest: 0.2
@@ -178,7 +178,7 @@ deploymentSpec:
           \ / \"data\" / \"processed\" / \"train.csv\", train_csv.path)\n    shutil.copy(workdir\
           \ / \"data\" / \"processed\" / \"test.csv\", test_csv.path)\n    shutil.copy(workdir\
           \ / \"data\" / \"processed\" / \"stats.json\", stats.path)\n\n"
-        image: ghcr.io/my-neme-eh-jeff/pipeline-kfp:latest
+        image: ghcr.io/my-neme-eh-jeff/churn-kfp:latest
         resources:
           cpuLimit: 0.5
           cpuRequest: 0.2
@@ -227,7 +227,7 @@ deploymentSpec:
           \ env=env)\n\n    shutil.copy(workdir / \"models\" / \"classifier.pkl\"\
           , model_artifact.path)\n    shutil.copy(workdir / \"models\" / \"run_id.txt\"\
           , run_id_artifact.path)\n\n"
-        image: ghcr.io/my-neme-eh-jeff/pipeline-kfp:latest
+        image: ghcr.io/my-neme-eh-jeff/churn-kfp:latest
         resources:
           cpuLimit: 1.0
           cpuRequest: 0.3
