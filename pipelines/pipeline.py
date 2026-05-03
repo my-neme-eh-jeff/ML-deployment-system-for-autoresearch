@@ -32,11 +32,19 @@ def preprocess(
     (workdir / "configs" / "params.yaml").write_text(params_yaml)
 
     import pandas as pd
+    import yaml
 
-    raw = pd.read_csv(raw_data_gcs_path)
+    cfg = yaml.safe_load(params_yaml)
+    csv_path = cfg["dataset"]["csv_path"]
     (workdir / "data").mkdir(parents=True, exist_ok=True)
-    # The path here matches the params.yaml `dataset.csv_path` default.
-    raw.to_csv(workdir / "data" / "churn_data.csv", index=False)
+    # Pull the raw dataset from GCS and re-materialize at the path the
+    # params.yaml `dataset.csv_path` points to.
+    if raw_data_gcs_path.endswith(".parquet"):
+        raw = pd.read_parquet(raw_data_gcs_path)
+        raw.to_parquet(workdir / csv_path, index=False)
+    else:
+        raw = pd.read_csv(raw_data_gcs_path)
+        raw.to_csv(workdir / csv_path, index=False)
 
     subprocess.run(["python", "src/preprocess.py"], cwd=str(workdir), check=True)
 
@@ -111,7 +119,7 @@ def evaluate(
 @dsl.pipeline(name="classifier-training-pipeline")
 def classifier_pipeline(
     params_yaml: str,
-    raw_data_gcs_path: str = "gs://customer-churn-dvc-remote/raw/churn_data.csv",
+    raw_data_gcs_path: str = "gs://customer-churn-dvc-remote/raw/ieee_cis.parquet",
     mlflow_tracking_uri: str = "http://mlflow.mlflow.svc.cluster.local:5000",
 ):
     """Full preprocess → train → evaluate DAG. params_yaml is the entire file content."""

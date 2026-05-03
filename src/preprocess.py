@@ -28,7 +28,11 @@ def preprocess(
     test_size = test_size if test_size is not None else pre["test_size"]
     seed = seed if seed is not None else pre["random_state"]
 
-    df = pd.read_csv(csv_path)
+    df = (
+        pd.read_parquet(csv_path)
+        if csv_path.endswith(".parquet")
+        else pd.read_csv(csv_path)
+    )
 
     target_col = dataset["target_column"]
     numeric = list(dataset.get("numeric_features", []))

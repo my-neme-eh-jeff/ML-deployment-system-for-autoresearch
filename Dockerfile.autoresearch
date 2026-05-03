@@ -18,8 +18,8 @@ COPY configs/ configs/
 COPY pipelines/ pipelines/
 COPY .dvc/ .dvc/
 COPY dvc.yaml dvc.lock .dvcignore ./
-COPY data/.gitignore data/churn_data.csv.dvc data/
-COPY data/processed/.gitignore data/processed/stats.json data/processed/
+COPY data/.gitignore data/ieee_cis.parquet.dvc data/
+COPY data/processed/.gitignore data/processed/
 
 # Compile the KFP pipeline at build time so each iteration can submit directly.
 RUN /app/.venv/bin/python pipelines/pipeline.py && \

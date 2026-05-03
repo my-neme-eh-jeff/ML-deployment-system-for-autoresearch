@@ -1,56 +1,45 @@
-
-# Schema for the dataset. Swap this block to plug in a new binary-classification CSV.
-# preprocess / train / evaluate all read from here — no hardcoded column names elsewhere.
+# Schema for the dataset. Swap this block to plug in a new binary-classification
+# CSV/Parquet. preprocess / train / evaluate all read from here.
 dataset:
-  csv_path: data/churn_data.csv
-  target_column: Churn
-  # If the target is "Yes"/"No", "T"/"F", etc. — provide the mapping here. Omit if already 0/1.
-  # Keys MUST be quoted: PyYAML parses bare Yes/No/On/Off as booleans.
-  target_mapping: {"Yes": 1, "No": 0}
-  drop_columns: [customerID]
-  numeric_features: [tenure, MonthlyCharges, TotalCharges]
-  categorical_features:
-    - gender
-    - SeniorCitizen
-    - Partner
-    - Dependents
-    - PhoneService
-    - MultipleLines
-    - InternetService
-    - OnlineSecurity
-    - OnlineBackup
-    - DeviceProtection
-    - TechSupport
-    - StreamingTV
-    - StreamingMovies
-    - Contract
-    - PaperlessBilling
-    - PaymentMethod
+  csv_path: data/ieee_cis.parquet
+  target_column: isFraud
+  # isFraud is already 0/1; no target_mapping.
+  # TransactionID is a row identifier (not a feature). TransactionDT is a
+  # raw timestamp; the loop can revisit it later as a feature.
+  drop_columns: [TransactionID, TransactionDT]
+  # Bad baseline: a single numeric feature, no categoricals. Autoresearch is
+  # meant to expand both lists. The dataset has many more columns available;
+  # see data/processed/stats.json after preprocess runs.
+  numeric_features: [TransactionAmt]
+  categorical_features: []
 
 preprocess:
   test_size: 0.2
   random_state: 42
 
 train:
-  model_type: HistGradientBoostingClassifier
+  # Intentionally weak baseline. Autoresearch traverses out from here.
+  model_type: DecisionTreeClassifier
   random_state: 42
-  max_depth: 4
-  n_estimators: 300
-  learning_rate: 0.05
-  min_samples_leaf: 20
+  max_depth: 1
+  max_features: 1
+
+  # Knobs the autoresearch loop may flip on
+  n_estimators: 100
+  min_samples_split: 2
+  min_samples_leaf: 1
   class_weight: null
   bootstrap: true
+  learning_rate: 0.1
   subsample: 1.0
   use_log_transform: false
-  max_features: 1
-  min_samples_split: 2
 
 evaluate:
   primary_metric: auc_roc
   auto_promote: true
 
-# Read only by auto_experiment/auto_loop.py. NOT a DVC dep, so editing this never
-# invalidates DVC stages.
+# Read only by auto_experiment/auto_loop.py. NOT a DVC dep, so editing this
+# never invalidates DVC stages.
 auto_experiment:
   baseline_auc: 0.0
   min_improvement: 0.001

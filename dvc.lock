@@ -5,28 +5,26 @@ stages:
     deps:
     - path: configs/params.yaml
       hash: md5
-      md5: 4ac3d009213f9ab72440ea93d40df525
-      size: 1374
-    - path: data/churn_data.csv
+      md5: 89a32b09f1a577e1960099fb777c20f8
+      size: 1380
+    - path: data/ieee_cis.parquet
       hash: md5
-      md5: 0f9de68e012bd3aed5fa7cdc9fc421af
-      size: 977501
+      md5: ba46a18a224f82711e6a91ec8dd45ad2
+      size: 29751989
     - path: src/preprocess.py
       hash: md5
-      md5: 40620c6fc66bb5911c4add3f5518e819
-      size: 3082
+      md5: 192430ea9fc0eb060097b94f0dc10b5c
+      size: 3279
     params:
       configs/params.yaml:
         dataset:
-          csv_path: data/churn_data.csv
-          target_column: Churn
-          target_mapping:
-            Yes: 1
-            No: 0
+          csv_path: data/ieee_cis.parquet
+          target_column: isFraud
           drop_columns:
-          - customerID
+          - TransactionID
+          - TransactionDT
           numeric_features:
-          - tenure
+          - TransactionAmt
           categorical_features: []
         preprocess:
           test_size: 0.2
@@ -34,23 +32,23 @@ stages:
     outs:
     - path: data/processed/stats.json
       hash: md5
-      md5: d5b31bab398220aaef7fa2fda6707776
-      size: 243
+      md5: 0f408ddaa40ae08ea4b93ffbe292dd8c
+      size: 255
     - path: data/processed/test.csv
       hash: md5
-      md5: 0b88cc96ed172fe12dc4d1112115ecaf
-      size: 6667
+      md5: 2c042b2d2adab540c1b8335d1625b302
+      size: 318604
     - path: data/processed/train.csv
       hash: md5
-      md5: aeb0a9f91bfa7f45f0e0b24ab01044c1
-      size: 26720
+      md5: 4ce21978fb14b1a2df7c81bc34fdf5f8
+      size: 1273576
   train:
     cmd: uv run python src/train.py
     deps:
     - path: data/processed/train.csv
       hash: md5
-      md5: aeb0a9f91bfa7f45f0e0b24ab01044c1
-      size: 26720
+      md5: 4ce21978fb14b1a2df7c81bc34fdf5f8
+      size: 1273576
     - path: src/features.py
       hash: md5
       md5: 24c90900de30d735a0ffbd462f2f5795
@@ -62,15 +60,13 @@ stages:
     params:
       configs/params.yaml:
         dataset:
-          csv_path: data/churn_data.csv
-          target_column: Churn
-          target_mapping:
-            Yes: 1
-            No: 0
+          csv_path: data/ieee_cis.parquet
+          target_column: isFraud
           drop_columns:
-          - customerID
+          - TransactionID
+          - TransactionDT
           numeric_features:
-          - tenure
+          - TransactionAmt
           categorical_features: []
         train:
           model_type: DecisionTreeClassifier
@@ -88,26 +84,26 @@ stages:
     outs:
     - path: models/classifier.pkl
       hash: md5
-      md5: 7156621aa33e7b96957cf7c371b7bcf0
-      size: 2391
+      md5: b1535ef714f2f5de8629172c2a9963fc
+      size: 2407
     - path: models/run_id.txt
       hash: md5
-      md5: 0d1f017412261a94ab7ae182cf2dfb5c
+      md5: 3c219a512c1e489300f73502b02aa284
       size: 32
   evaluate:
     cmd: uv run python src/evaluate.py
     deps:
     - path: data/processed/test.csv
       hash: md5
-      md5: 0b88cc96ed172fe12dc4d1112115ecaf
-      size: 6667
+      md5: 2c042b2d2adab540c1b8335d1625b302
+      size: 318604
     - path: models/classifier.pkl
       hash: md5
-      md5: 7156621aa33e7b96957cf7c371b7bcf0
-      size: 2391
+      md5: b1535ef714f2f5de8629172c2a9963fc
+      size: 2407
     - path: models/run_id.txt
       hash: md5
-      md5: 0d1f017412261a94ab7ae182cf2dfb5c
+      md5: 3c219a512c1e489300f73502b02aa284
       size: 32
     - path: src/evaluate.py
       hash: md5
@@ -120,15 +116,13 @@ stages:
     params:
       configs/params.yaml:
         dataset:
-          csv_path: data/churn_data.csv
-          target_column: Churn
-          target_mapping:
-            Yes: 1
-            No: 0
+          csv_path: data/ieee_cis.parquet
+          target_column: isFraud
           drop_columns:
-          - customerID
+          - TransactionID
+          - TransactionDT
           numeric_features:
-          - tenure
+          - TransactionAmt
           categorical_features: []
         evaluate:
           primary_metric: auc_roc
@@ -149,5 +143,5 @@ stages:
     outs:
     - path: metrics.json
       hash: md5
-      md5: 693418b18a23bc03c0ee93ea4999b9d0
+      md5: e99c6c4f71d163a977a4277f1089879e
       size: 94
