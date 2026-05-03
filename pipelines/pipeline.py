@@ -31,20 +31,16 @@ def preprocess(
     (workdir / "configs").mkdir(parents=True, exist_ok=True)
     (workdir / "configs" / "params.yaml").write_text(params_yaml)
 
-    import pandas as pd
+    import gcsfs
     import yaml
 
     cfg = yaml.safe_load(params_yaml)
     csv_path = cfg["dataset"]["csv_path"]
-    (workdir / "data").mkdir(parents=True, exist_ok=True)
-    # Pull the raw dataset from GCS and re-materialize at the path the
-    # params.yaml `dataset.csv_path` points to.
-    if raw_data_gcs_path.endswith(".parquet"):
-        raw = pd.read_parquet(raw_data_gcs_path)
-        raw.to_parquet(workdir / csv_path, index=False)
-    else:
-        raw = pd.read_csv(raw_data_gcs_path)
-        raw.to_csv(workdir / csv_path, index=False)
+    (workdir / csv_path).parent.mkdir(parents=True, exist_ok=True)
+    # Byte-level copy from GCS to local — avoids loading the full dataframe
+    # into memory (a pd.read + pd.to_parquet round-trip on the 200K-row IEEE-CIS
+    # parquet OOM'd this pod at the 1 GiB limit, with no traceback).
+    gcsfs.GCSFileSystem().get(raw_data_gcs_path, str(workdir / csv_path))
 
     subprocess.run(["python", "src/preprocess.py"], cwd=str(workdir), check=True)
 

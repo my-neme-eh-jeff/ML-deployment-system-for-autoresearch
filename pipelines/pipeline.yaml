@@ -4,7 +4,7 @@
 # Inputs:
 #    mlflow_tracking_uri: str [Default: 'http://mlflow.mlflow.svc.cluster.local:5000']
 #    params_yaml: str
-#    raw_data_gcs_path: str [Default: 'gs://customer-churn-dvc-remote/raw/churn_data.csv']
+#    raw_data_gcs_path: str [Default: 'gs://customer-churn-dvc-remote/raw/ieee_cis.parquet']
 components:
   comp-evaluate:
     executorLabel: exec-evaluate
@@ -170,12 +170,15 @@ deploymentSpec:
           \ subprocess\n    from pathlib import Path\n\n    workdir = Path(\"/app\"\
           )\n    (workdir / \"configs\").mkdir(parents=True, exist_ok=True)\n    (workdir\
           \ / \"configs\" / \"params.yaml\").write_text(params_yaml)\n\n    import\
-          \ pandas as pd\n\n    raw = pd.read_csv(raw_data_gcs_path)\n    (workdir\
-          \ / \"data\").mkdir(parents=True, exist_ok=True)\n    # The path here matches\
-          \ the params.yaml `dataset.csv_path` default.\n    raw.to_csv(workdir /\
-          \ \"data\" / \"churn_data.csv\", index=False)\n\n    subprocess.run([\"\
-          python\", \"src/preprocess.py\"], cwd=str(workdir), check=True)\n\n    shutil.copy(workdir\
-          \ / \"data\" / \"processed\" / \"train.csv\", train_csv.path)\n    shutil.copy(workdir\
+          \ gcsfs\n    import yaml\n\n    cfg = yaml.safe_load(params_yaml)\n    csv_path\
+          \ = cfg[\"dataset\"][\"csv_path\"]\n    (workdir / csv_path).parent.mkdir(parents=True,\
+          \ exist_ok=True)\n    # Byte-level copy from GCS to local \u2014 avoids\
+          \ loading the full dataframe\n    # into memory (a pd.read + pd.to_parquet\
+          \ round-trip on the 200K-row IEEE-CIS\n    # parquet OOM'd this pod at the\
+          \ 1 GiB limit, with no traceback).\n    gcsfs.GCSFileSystem().get(raw_data_gcs_path,\
+          \ str(workdir / csv_path))\n\n    subprocess.run([\"python\", \"src/preprocess.py\"\
+          ], cwd=str(workdir), check=True)\n\n    shutil.copy(workdir / \"data\" /\
+          \ \"processed\" / \"train.csv\", train_csv.path)\n    shutil.copy(workdir\
           \ / \"data\" / \"processed\" / \"test.csv\", test_csv.path)\n    shutil.copy(workdir\
           \ / \"data\" / \"processed\" / \"stats.json\", stats.path)\n\n"
         image: ghcr.io/my-neme-eh-jeff/churn-kfp:latest
@@ -315,7 +318,7 @@ root:
       params_yaml:
         parameterType: STRING
       raw_data_gcs_path:
-        defaultValue: gs://customer-churn-dvc-remote/raw/churn_data.csv
+        defaultValue: gs://customer-churn-dvc-remote/raw/ieee_cis.parquet
         isOptional: true
         parameterType: STRING
 schemaVersion: 2.1.0
