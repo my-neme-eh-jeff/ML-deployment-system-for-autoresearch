@@ -45,7 +45,7 @@ The cluster is brought up only for demos, so live URLs aren't pinned here. They 
 
 ## 🎬 Demo video
 
-*Loom walkthrough — link goes here.*
+*Coming soon!*
 
 ---
 
