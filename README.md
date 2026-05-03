@@ -1,31 +1,36 @@
 # ML Deployment System for Autoresearch
 
-Drop in a binary-classification CSV, declare its schema, and an LLM iteratively proposes code changes, trains them on Kubernetes, and ships the winners to production via GitOps. Nobody clicks *approve*.
+Drop in a binary-classification CSV, declare its schema, and an LLM iteratively proposes code changes, trains them on Kubernetes, and ships the winners to production via GitOps.
+
+**Nobody clicks *approve*.**
 
 ---
 
 ### For non-technical readers
 
-This is a system that improves a machine-learning model on its own. An AI (Claude) proposes a small change, the system trains a new model, measures whether it is actually better, and if it is, automatically deploys it to a live API that anyone on the internet can call. If the new model is worse, the system discards the change and tries something else. Nobody needs to click *approve* for any of this.
+A system that improves an ML model on its own.
+
+- Claude proposes a small change.
+- The system trains a new model.
+- If it scores better, the new model goes live automatically.
+- If it scores worse, the change is discarded and the loop tries something else.
+
+No human in the loop.
 
 ### For technical readers
 
-A Kubeflow Pipelines run trains and evaluates a candidate model on GKE. If its AUC strictly beats the current `@champion` alias in MLflow, the autoresearch loop bumps a deployment annotation in `k8s/` and pushes a commit via a GitHub App. ArgoCD reconciles the change, the inference Deployment rolls, and the new pods re-read `models:/classifier@champion` from MLflow at startup. Failed candidates never edit the annotation, so the live model never gets worse than the last champion that won. Dataset is plug-and-play through `configs/params.yaml`; no code knows the column names.
+- A Kubeflow Pipelines run trains and evaluates each candidate on GKE.
+- If AUC strictly beats the current `@champion` alias in MLflow, the autoresearch loop bumps an annotation in `k8s/` and pushes via a GitHub App.
+- ArgoCD reconciles, the inference Deployment rolls, new pods re-read `models:/classifier@champion` from MLflow at startup.
+- Failed candidates never edit the annotation. The live model can't get worse than the last champion that won.
+- Dataset is plug-and-play through `configs/params.yaml`. No code knows the column names.
 
 ---
 
-## 🚀 Live demo
-
-| Surface | URL | What you see |
-|---|---|---|
-| Prediction API | <http://34.180.37.1/predict> | POST a row, get a probability |
-| Health | <http://34.180.37.1/health> | `model_version` of the currently-served champion |
-| MLflow | <http://34.180.20.197:5000> | All runs, all model versions, the `@champion` alias |
-| KFP | <http://34.93.2.209> | Pipeline DAGs in real time |
-| ArgoCD | <http://34.100.246.237> | Sync status, rollout history (login shown in the demo video) |
+## 🚀 Try it live
 
 ```bash
-curl -X POST http://34.180.37.1/predict \
+curl -X POST <API>/predict \
   -H "Content-Type: application/json" \
   -d '{"data":{"gender":"Female","SeniorCitizen":0,"Partner":"Yes","Dependents":"No",
        "tenure":12,"PhoneService":"Yes","MultipleLines":"No",
@@ -33,8 +38,12 @@ curl -X POST http://34.180.37.1/predict \
        "DeviceProtection":"No","TechSupport":"No","StreamingTV":"No",
        "StreamingMovies":"No","Contract":"Month-to-month","PaperlessBilling":"Yes",
        "PaymentMethod":"Electronic check","MonthlyCharges":70.35,"TotalCharges":846.0}}'
-# → {"prediction":0,"probability":0.26,"model_version":"5"}
+
+# Response
+# {"prediction": 0, "probability": 0.26, "model_version": "5"}
 ```
+
+The cluster is brought up only for demos, so live URLs aren't pinned here. They appear in the demo video.
 
 ## 🎬 Demo video
 
@@ -44,93 +53,78 @@ curl -X POST http://34.180.37.1/predict \
 
 ## 📐 Architecture
 
-Everything inside the GKE cluster, plus the GCP and GitHub services it depends on:
-
 ```mermaid
 flowchart TB
-    classDef ns fill:#eef,stroke:#557,stroke-width:1px;
-    classDef ext fill:#fef9e7,stroke:#aa8;
-    classDef api fill:#e6f7e6,stroke:#393;
+    Internet((User))
 
-    Internet((Internet user))
-
-    subgraph GKE["GKE Autopilot · mlops-cluster · asia-south1"]
+    subgraph GKE["GKE Autopilot · asia-south1"]
         direction TB
 
         subgraph SERVE["serving namespace"]
-            API["Inference API · 2 pods · HPA 2-10"]:::api
-            JOB["Autoresearch K8s Job<br/>Claude proposes → submits KFP run → commits"]
+            API["Inference API<br/>2 pods · HPA 2-10"]
+            JOB["Autoresearch Job"]
         end
-        SERVE:::ns
 
         subgraph MLNS["mlflow namespace"]
-            MLF["MLflow server (uvicorn)<br/>+ Cloud SQL Auth Proxy sidecar"]
-            REG[("Model registry<br/>@champion / @challenger aliases")]
+            MLF["MLflow<br/>+ CloudSQL Auth Proxy"]
+            REG[("@champion alias")]
             MLF --- REG
         end
-        MLNS:::ns
 
         subgraph KFNS["kubeflow namespace"]
-            KFPCTL["ml-pipeline controller"]
-            KFPUI["KFP UI"]
-            KFPCTL --- KFPUI
+            KFP["KFP controller + UI"]
         end
-        KFNS:::ns
 
         subgraph AR["argocd namespace"]
-            ARGO["ArgoCD server<br/>watches k8s/ on main"]
+            ARGO["ArgoCD<br/>watches k8s/ on main"]
         end
-        AR:::ns
     end
 
-    subgraph GCP["GCP managed services"]
-        CSQL[("CloudSQL Postgres<br/>MLflow backend")]:::ext
-        GCSART[("GCS · MLflow artifacts")]:::ext
-        GCSDVC[("GCS · DVC remote · datasets")]:::ext
+    subgraph GCP["GCP managed"]
+        CSQL[("CloudSQL Postgres")]
+        GCSART[("GCS · MLflow artifacts")]
+        GCSDVC[("GCS · DVC datasets")]
     end
 
     subgraph GH["GitHub"]
-        REPO["repo · k8s/ on main"]:::ext
-        GHCR["ghcr.io · 3 container images<br/>(api · kfp-base · autoresearch)"]:::ext
+        REPO["repo · k8s/ on main"]
+        GHCR["ghcr.io<br/>3 container images"]
     end
 
     Internet --> API
-    Internet --> MLF
-    Internet --> KFPUI
-    Internet --> ARGO
 
-    JOB -->|submits pipeline| KFPCTL
-    KFPCTL -->|log run · register version · set alias| MLF
-    KFPCTL -.->|pull dataset| GCSDVC
+    JOB -->|submit run| KFP
+    KFP -->|register, set alias| MLF
+    KFP -.->|pull dataset| GCSDVC
     MLF --> CSQL
     MLF --> GCSART
 
-    JOB -->|GitHub App · GraphQL commit| REPO
+    JOB -->|GitHub App commit| REPO
     REPO -->|3-min poll| ARGO
     ARGO -->|kubectl apply| API
-    API -->|"models:/classifier@champion"| MLF
+    API -->|"@champion"| MLF
 
     GHCR -. pull .-> API
-    GHCR -. pull .-> KFPCTL
+    GHCR -. pull .-> KFP
     GHCR -. pull .-> JOB
 ```
 
-### What's actually deployed
+### What's deployed
 
-Four artifact stores. All four have to be healthy for the loop to run end-to-end; any one of them broken stalls everything.
+Four artifact stores. All four must be healthy or the loop stalls.
 
-| # | Artifact | Where | Purpose |
-|---|---|---|---|
-| 1 | `@champion` alias on the `classifier` registered model | GKE MLflow + CloudSQL | The single declared production model. Pods re-read this on every restart. |
-| 2 | Inference container image | `ghcr.io/<user>/churn-api` | What every Pod in the inference Deployment runs |
-| 3 | KFP base image | `ghcr.io/<user>/churn-kfp` | Used by every preprocess / train / evaluate step inside KFP |
-| 4 | Autoresearch container image | `ghcr.io/<user>/autoresearch` | Runs the Claude → KFP → MLflow → GitHub loop as a K8s Job |
+| # | Artifact | Where |
+|---|---|---|
+| 1 | `@champion` alias on `classifier` | MLflow + CloudSQL |
+| 2 | Inference image | `ghcr.io/<user>/churn-api` |
+| 3 | KFP base image | `ghcr.io/<user>/churn-kfp` |
+| 4 | Autoresearch image | `ghcr.io/<user>/autoresearch` |
 
 ---
 
 ## 🤖 The autoresearch loop
 
-Inspired by [Karpathy's autoresearch](https://github.com/karpathy/autoresearch). One iteration end-to-end:
+Inspired by [Karpathy's autoresearch](https://github.com/karpathy/autoresearch).
 
 ```mermaid
 sequenceDiagram
@@ -143,191 +137,155 @@ sequenceDiagram
     participant Argo as ArgoCD
     participant Pods as Inference Pods
 
-    Job->>Claude: current code, params, experiment history
-    Claude-->>Job: ONE proposed change in params or src
+    Job->>Claude: code, params, history
+    Claude-->>Job: ONE proposed change
     Job->>KFP: submit pipeline run
-    KFP->>MLflow: log run, register model vN
+    KFP->>MLflow: log run, register vN
     KFP->>MLflow: compare AUC vs @champion
 
-    alt AUC strictly better
+    alt AUC better
         MLflow-->>KFP: set @champion = vN
-        Job->>GH: bump annotation in deployment.yaml<br/>via GraphQL createCommitOnBranch
+        Job->>GH: bump deployment annotation
         GH-->>Argo: poll detects change
         Argo->>Pods: rolling restart
-        Pods->>MLflow: load models:/classifier@champion
+        Pods->>MLflow: load @champion
         Pods-->>Job: now serving vN
     else AUC worse or equal
         MLflow-->>KFP: @champion unchanged
-        Job->>Job: revert proposed change, append to history
+        Job->>Job: revert + log to history
     end
 ```
 
-**Promotion is a chain, not one API call.** Setting `@champion` in MLflow on its own changes nothing live; the running pods loaded their model at startup and hold it in memory. The annotation bump in `k8s/deployment.yaml` is what triggers the rolling restart, and the new pods read `@champion` again from MLflow on startup. Failed iterations never touch the annotation, so the live model can't get worse — only different.
+### Why promotion is a chain, not one API call
+
+Setting `@champion` in MLflow alone changes nothing live. Pods loaded their model at startup and hold it in memory.
+
+The annotation bump in `k8s/deployment.yaml` is what triggers the rolling restart. New pods then read `@champion` again at startup. Failed iterations never touch the annotation, so the live model **can't get worse, only different**.
 
 ### Who does what
 
-| Actor | Role | Does NOT do |
+| Actor | Owns | Does NOT |
 |---|---|---|
-| **Claude** (LLM) | Proposes one code/config change per iteration | Touch the cluster, MLflow, or git directly |
-| **Autoresearch Job** | Applies proposals, submits KFP runs, commits via GitHub App | Train models or evaluate them |
-| **KFP** | Runs preprocess → train → evaluate on GKE | Trigger deployments or commit to git |
-| **MLflow** | Stores runs, metrics, registers versions, owns `@champion` | Send notifications or restart pods |
-| **ArgoCD** | Reconciles cluster state to git | Know about models, experiments, or MLflow |
+| **Claude** | Propose one change per iter | Touch the cluster |
+| **Autoresearch Job** | Apply, submit KFP, commit | Train or evaluate |
+| **KFP** | Train + evaluate on GKE | Trigger deploys |
+| **MLflow** | Runs, metrics, `@champion` | Restart pods |
+| **ArgoCD** | Reconcile cluster to git | Know about models |
 
 ```bash
-# Preview what Claude would propose (no pipeline run)
-make auto-experiment-dry-run
-
-# Submit a real iteration loop (requires ANTHROPIC_API_KEY)
-make autoresearch-run AUTORESEARCH_N=20 AUTORESEARCH_HOURS=2
+make auto-experiment-dry-run                                  # preview
+make autoresearch-run AUTORESEARCH_N=20 AUTORESEARCH_HOURS=2  # real run
 ```
 
 ---
 
 ## 🧪 Pipeline stages
 
-A Kubeflow pipeline run, defined in `pipelines/pipeline.py`:
+Defined in `pipelines/pipeline.py`:
 
-| Stage | Input | Output | What it does |
-|---|---|---|---|
-| **preprocess** | dataset CSV (DVC-fetched from GCS) | `train.csv`, `test.csv`, `stats.json` | Read schema from `params.yaml`, encode target, stratified 80/20 split |
-| **train** | `train.csv` | `classifier.pkl`, `run_id.txt` | Fit sklearn `Pipeline` (StandardScaler + OneHotEncoder + chosen estimator), log to MLflow, register model |
-| **evaluate** | `test.csv`, `classifier.pkl` | `metrics.json` | Score model, log metrics, set `@champion` alias if AUC strictly improves |
+| Stage | Output | Notes |
+|---|---|---|
+| **preprocess** | `train.csv`, `test.csv` | Reads schema from `params.yaml`, stratified 80/20 split |
+| **train** | `classifier.pkl`, `run_id.txt` | sklearn `Pipeline` (Scaler + OHE + estimator), logged to MLflow |
+| **evaluate** | `metrics.json` | Sets `@champion` if AUC strictly improves |
 
-DVC here is for data versioning only. Each `data/*.dvc` is a pointer file in git with the blob in GCS, so any commit maps to one dataset hash. KFP is the pipeline runner.
+DVC handles data versioning only. Each `data/*.dvc` is a pointer in git, blob in GCS. KFP is the pipeline runner.
 
 ### Plug-and-play schema
 
-The whole stack reads the dataset shape from one block. To swap datasets, replace this:
+Swap datasets by replacing this block in `configs/params.yaml`:
 
 ```yaml
-# configs/params.yaml
 dataset:
   csv_path: data/churn_data.csv
   target_column: Churn
-  target_mapping: {"Yes": 1, "No": 0}    # omit if already 0/1
+  target_mapping: {"Yes": 1, "No": 0}
   drop_columns: [customerID]
-  numeric_features: [tenure]              # deliberately weak baseline
+  numeric_features: [tenure]
   categorical_features: []
 
 train:
-  model_type: DecisionTreeClassifier      # the bad starting point
+  model_type: DecisionTreeClassifier   # bad starting point
   max_depth: 1
   max_features: 1
 ```
 
-The starting point is deliberately weak: depth-1 decision tree on one numeric feature, AUC around 0.55. A strong baseline would make the autoresearch loop a no-op, so I needed a baseline with somewhere to go.
+The starting point is deliberately weak: depth-1 tree, one feature, AUC around 0.55. A strong baseline would make the loop a no-op.
 
 ---
 
 ## ⚡ Quick start
 
 ```bash
-# Install deps
-uv sync
-
-# Pull the dataset from GCS (DVC = data versioning only)
-uv run dvc pull
-
-# Run pytest
-make test
-
-# Run the inference API locally against the GKE MLflow
-make mlflow-kill && make mlflow      # port-forward GKE MLflow → localhost:5000
-make serve                            # POST localhost:8000/predict
+uv sync                              # install
+uv run dvc pull                      # pull dataset from GCS
+make test                            # run pytest
+make mlflow-kill && make mlflow      # port-forward GKE MLflow
+make serve                           # local API → POST /predict
 ```
 
 ---
 
-## 🔁 GitOps: why ArgoCD (and why not Helm)
+## 🔁 GitOps: why ArgoCD, why not Helm
 
-This project uses raw YAML manifests with ArgoCD. No Helm, no Kustomize.
+Raw YAML manifests + ArgoCD. No Helm, no Kustomize.
 
-ArgoCD's only job is to make the cluster match what's in git. Every ~3 minutes it compares `k8s/` against the live cluster state, and if they differ, it applies the git version. Git is the source of truth for what's deployed.
+ArgoCD reconciles `k8s/` against the live cluster every ~3 minutes. Git is the source of truth for what's deployed.
 
-```
-Without ArgoCD:                              With ArgoCD:
-CI updates k8s/deployment.yaml               CI updates k8s/deployment.yaml
-↓                                            ↓
-git push                                     git push
-↓                                            ↓
-NOTHING HAPPENS                              ArgoCD detects within 3 min
-↓                                            ↓
-Someone runs kubectl apply                   Rolling update, automatic
-(who? when? did they forget?)                Auditable via git log
-```
-
-| Source format | When to use it | Used here? |
+| Format | Earns its keep when | Used here |
 |---|---|---|
-| Raw YAML | Small apps, < 10 manifests, one environment | **Yes** — 4 files in `k8s/` |
-| Helm | Many environments (dev/staging/prod), templating | No — one cluster, one env |
-| Kustomize | Environment variants without Go templates | No — same reason |
+| Raw YAML | Small apps, one environment | ✅ 4 files in `k8s/` |
+| Helm | Many envs (dev/staging/prod) or 10+ services sharing config | ❌ |
+| Kustomize | Environment variants | ❌ |
 
-The one-line `sed` in CI that swaps the image tag does the same thing `helm upgrade --set image.tag=...` would. Helm earns its keep once you have multiple environments or many services sharing config. I have one cluster and four manifests; a Chart would be more code to maintain than the manifests it replaces.
+The one-line `sed` in CI that swaps the image tag does the same thing as `helm upgrade --set image.tag=...`. With one cluster and four manifests, a Chart would be more code to maintain than the manifests it replaces.
 
 ---
 
 ## ☁️ Infrastructure
 
-| Component | Details |
+| Component | What |
 |---|---|
-| GKE Autopilot | `mlops-cluster`, `asia-south1`, autoscales |
-| MLflow backend | CloudSQL PostgreSQL 15 (db-f1-micro) |
-| MLflow artifacts | GCS bucket (`*-mlflow-artifacts-*`) |
-| DVC remote | GCS bucket (`customer-churn-dvc-remote`) |
-| Container registry | `ghcr.io/<user>/{churn-api,churn-kfp,autoresearch}` (multi-arch on amd64) |
-| Workload Identity | Pods bind to GCP SAs. No service-account keys mounted in containers. |
-| Secrets | `ANTHROPIC_API_KEY`, GitHub App PEM in GCP Secret Manager |
-
-### Cluster setup
-
-```bash
-# Connect kubectl to the cluster
-gcloud container clusters get-credentials mlops-cluster \
-  --region=asia-south1 --project=<project-id>
-
-# Bootstrap the registry: train one baseline model and set @champion
-make mlflow-kill && make mlflow
-make bootstrap
-
-# Verify
-curl http://34.180.37.1/health   # → {"model_loaded": true, "model_version": "..."}
-```
+| GKE Autopilot | `mlops-cluster`, `asia-south1` |
+| MLflow backend | CloudSQL Postgres 15 |
+| MLflow artifacts | GCS bucket |
+| DVC remote | GCS bucket |
+| Images | `ghcr.io/<user>/{churn-api, churn-kfp, autoresearch}` |
+| Workload Identity | Pods bind to GCP SAs; no SA keys mounted |
+| Secrets | Anthropic key + GitHub App PEM in GCP Secret Manager |
 
 ---
 
 ## 🛠️ Tools and why
 
-| Tool | Role | Why |
-|---|---|---|
-| **MLflow** | Experiment tracking + model registry + artifact proxy | Industry standard. `@champion`/`@challenger` aliases give clean promotion semantics. CloudSQL backend + GCS artifacts via `--serve-artifacts` means clients never need direct bucket access. |
-| **Kubeflow Pipelines** | K8s-native training orchestration | Each step is a container, scales independently, DAG visualisation built-in. The same image powers preprocess / train / evaluate. |
-| **DVC** | Data versioning | One pointer file per dataset in git, blob in GCS. Any git commit deterministically maps to one dataset hash. (Not used as a pipeline runner — KFP is.) |
-| **ArgoCD** | GitOps deployment | Continuously reconciles cluster state to git. Push = deploy. Auditable via git log. |
-| **GitHub Actions** | CI/CD | Lint, test, build images, push to ghcr.io. Path-filtered so docs-only changes don't trigger image rebuilds. |
-| **GitHub App + GraphQL** | Autoresearch's commit identity | The autoresearch Job authenticates as `ML-deployment-for-autoresearch`, signs commits via `createCommitOnBranch` so pushes carry verified-author signatures (no PAT, no service-account leakage). |
-| **GKE Autopilot** | Managed Kubernetes | No node management. Pay-per-pod. Stable LoadBalancer IPs. |
-| **CloudSQL** | Postgres for MLflow | Survives pod restarts. SQLite-on-PVC didn't; the registry got wiped twice before I swapped backends. |
-| **uv + ruff** | Python tooling | Fast, replace pip/poetry/pyenv and flake8/black/isort. |
+| Tool | Why |
+|---|---|
+| **MLflow** | Runs, registry, `--serve-artifacts` proxy. `@champion`/`@challenger` aliases give clean promotion semantics. |
+| **Kubeflow Pipelines** | K8s-native; each step a container; DAG view built-in. |
+| **DVC** | Data versioning. Pointer in git, blob in GCS. *(Not used as a pipeline runner.)* |
+| **ArgoCD** | Reconciles cluster to git. Push = deploy. |
+| **GitHub Actions** | Lint, test, build images. Path-filtered so docs don't trigger image rebuilds. |
+| **GitHub App + GraphQL** | Autoresearch commits are signed and verified. No PAT. |
+| **GKE Autopilot** | No node management. Stable LoadBalancer IPs. |
+| **CloudSQL** | Survives pod restarts. SQLite-on-PVC didn't; the registry got wiped twice before I swapped backends. |
+| **uv + ruff** | Fast Python tooling. |
 
 ---
 
 ## 🗺️ Roadmap
 
-What's built next, roughly in order:
-
-- **IEEE-CIS Fraud Detection dataset** (590K rows, 433 features). Telco Churn caps near AUC 0.84, which doesn't leave the loop much room to climb. IEEE-CIS gives the loop a real trajectory to traverse.
-- **20+ iteration autoresearch run** on IEEE-CIS, with the AUC-vs-iteration trajectory plot in this README.
-- **Cost trajectory plot.** Anthropic input/output tokens per iteration are already logged to MLflow. A Make target turns the history into a `$ spent vs. AUC gained` chart.
-- **Argo Rollouts canary.** Replace the rolling Deployment with a canary that holds 10% traffic for N seconds and aborts on a `/health` regression. Auto-rollback on bad champion.
-- **API auth.** Cloudflare Access or a single shared API key in front of `/predict`. Open to the public internet right now because the demo URL has to work for whoever clicks it; not worth gating until that stops mattering.
-- **CI MLflow.** CI today spins up an ephemeral MLflow for `dvc repro`, so promotions inside CI hit a throwaway DB. A stable CI-accessible MLflow endpoint would close that loop.
+- **IEEE-CIS Fraud Detection dataset** (590K × 433). Telco Churn caps near AUC 0.84; IEEE-CIS gives the loop a real climb.
+- **20+ iter autoresearch run** on IEEE-CIS, with the AUC-vs-iteration trajectory plot.
+- **Cost plot.** Anthropic tokens per iteration are already logged to MLflow. A Make target turns the history into a `$ spent vs. AUC gained` chart.
+- **Argo Rollouts canary.** 10% traffic, abort on `/health` regression, auto-rollback.
+- **API auth.** Cloudflare Access or a shared API key. Open right now because the demo URL has to work for whoever clicks it.
+- **CI MLflow.** CI uses an ephemeral MLflow today; promotions inside CI hit a throwaway DB. A stable CI-accessible endpoint would close that loop.
 
 ### Current scope
 
-A pet project I built to learn MLOps end-to-end, not a 5-nines production deployment. Choices that follow from that:
+A pet project to learn MLOps end-to-end. Not a 5-nines production deployment.
 
-- Single zone (`asia-south1-c`). A zone outage takes everything down.
+- Single zone. A zone outage takes everything down.
 - Free-trial GCP credits, so the public IPs are stable per cluster lifetime but not forever.
-- No data-drift monitoring, no auto-retraining triggers. Autoresearch *is* the retraining mechanism here.
-- No model-serving benchmarking (TTFT, P99 latency). That work lives in a separate project.
+- No data-drift monitoring, no auto-retraining triggers. **Autoresearch is the retraining mechanism.**
+- No model-serving benchmarking (TTFT, P99). Separate project.
