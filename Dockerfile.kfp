@@ -5,6 +5,7 @@ FROM python:3.12-slim
 # of sklearn + mlflow + pandas exceed this.
 RUN pip install --no-cache-dir \
     pandas==2.3.3 \
+    pyarrow==21.0.0 \
     scikit-learn==1.8.0 \
     mlflow==3.10.1 \
     "numpy>=2.0" \
