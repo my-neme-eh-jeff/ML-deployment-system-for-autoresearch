@@ -35,8 +35,14 @@ def preprocess(
     categorical = list(dataset.get("categorical_features", []))
     drop = list(dataset.get("drop_columns", []))
 
+    # Drop unwanted columns first
+    for col in drop:
+        if col in df.columns:
+            df = df.drop(columns=[col])
+
     # Coerce numeric columns to float and median-fill any NaNs that result —
-    # handles "blank" strings and similar quirks generically.
+    # handles "blank" strings and similar quirks generically (e.g. TotalCharges
+    # in the Telco churn dataset has whitespace strings for some new customers).
     for col in numeric:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
@@ -45,10 +51,6 @@ def preprocess(
     target_mapping = dataset.get("target_mapping")
     if target_mapping:
         df[target_col] = df[target_col].map(target_mapping)
-
-    for col in drop:
-        if col in df.columns:
-            df = df.drop(columns=[col])
 
     # Keep only the columns the rest of the pipeline declares it cares about.
     keep = [target_col, *numeric, *categorical]

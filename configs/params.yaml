@@ -1,3 +1,4 @@
+
 # Schema for the dataset. Swap this block to plug in a new binary-classification CSV.
 # preprocess / train / evaluate all read from here — no hardcoded column names elsewhere.
 dataset:
@@ -7,30 +8,27 @@ dataset:
   # Keys MUST be quoted: PyYAML parses bare Yes/No/On/Off as booleans.
   target_mapping: {"Yes": 1, "No": 0}
   drop_columns: [customerID]
-  # Bad baseline: a single numeric feature, no categoricals. Autoresearch is meant to
-  # expand both lists. The dataset has more columns available; see data/processed/stats.json.
-  numeric_features: [tenure]
-  categorical_features: []
+  numeric_features: [tenure, MonthlyCharges, TotalCharges]
+  categorical_features: [Contract, InternetService, PaymentMethod, TechSupport, OnlineSecurity, OnlineBackup, DeviceProtection, StreamingTV, StreamingMovies, MultipleLines, gender, SeniorCitizen, Partner, Dependents, PhoneService, PaperlessBilling]
 
 preprocess:
   test_size: 0.2
   random_state: 42
 
 train:
-  # Intentionally weak baseline. Autoresearch traverses out from here.
-  model_type: DecisionTreeClassifier
+  model_type: HistGradientBoostingClassifier
   random_state: 42
-  max_depth: 1
-  max_features: 1
+  max_depth: 6
+  n_estimators: 200
+  learning_rate: 0.05
+  subsample: 1.0
 
   # Knobs the autoresearch loop may flip on
-  n_estimators: 100
   min_samples_split: 2
   min_samples_leaf: 1
   class_weight: null
   bootstrap: true
-  learning_rate: 0.1
-  subsample: 1.0
+  max_features: 1
   use_log_transform: false
 
 evaluate:
