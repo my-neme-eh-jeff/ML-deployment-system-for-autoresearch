@@ -2,24 +2,24 @@ dataset:
   csv_path: data/ieee_cis.parquet
   target_column: isFraud
   drop_columns: [TransactionID, TransactionDT]
-  numeric_features: [TransactionAmt, card1, card2, card3, card5, C1, C2, C3, C4, C5, C6, C7, C8, C9, C10, C11, C12, C13, C14, D1, D2, D3, D4, D5, D10, D15, V1, V2, V3, V4, V5, V6, V7, V8, V9, V10]
-  categorical_features: [ProductCD, card4, card6, P_emaildomain, R_emaildomain]
+  numeric_features: [TransactionAmt]
+  categorical_features: [ProductCD]
 
 preprocess:
   test_size: 0.2
   random_state: 42
 
 train:
-  model_type: HistGradientBoostingClassifier
+  model_type: DecisionTreeClassifier
   random_state: 42
   max_depth: null
   max_features: null
-  n_estimators: 300
+  n_estimators: 100
   min_samples_split: 2
   min_samples_leaf: 1
   class_weight: null
   bootstrap: true
-  learning_rate: 0.05
+  learning_rate: 0.1
   subsample: 1.0
   use_log_transform: false
 

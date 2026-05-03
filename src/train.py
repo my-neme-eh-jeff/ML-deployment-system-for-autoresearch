@@ -147,6 +147,20 @@ def train(
     y = df[target]
     X = apply_feature_engineering(X, params)
 
+    # Filter the schema against the actual training frame: any column the
+    # autoresearch loop proposed that didn't survive preprocess (e.g. a
+    # dropped-during-prep V or D feature) is silently dropped here too. The
+    # ColumnTransformer would otherwise raise on the first missing column.
+    dataset = {
+        **dataset,
+        "numeric_features": [
+            c for c in dataset.get("numeric_features", []) if c in X.columns
+        ],
+        "categorical_features": [
+            c for c in dataset.get("categorical_features", []) if c in X.columns
+        ],
+    }
+
     pipeline = build_pipeline(dataset, params)
 
     mlflow.set_experiment(EXPERIMENT_NAME)
