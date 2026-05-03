@@ -8,6 +8,40 @@ End-to-end MLOps project for customer churn prediction. The ML model is intentio
 
 **Collaboration style:** Do NOT just build things silently. Aman wants to learn each concept deeply — explain the "why," share industry examples, ask questions to check understanding, and share blog posts. Teach end-to-end before and after implementing. Think of it as pair programming with a teaching component.
 
+## Lessons from previous sessions — don't repeat these
+
+These are real failures that cost real time. Read before starting.
+
+### "Done" means "running in the cluster," not "code written"
+
+For any change that targets cloud infra, declaring it complete requires all four:
+1. `git push` succeeded.
+2. CI run finished green (`gh run view <id> --json conclusion`).
+3. ArgoCD reconciled (`kubectl get applications.argoproj.io -A` → `Synced/Healthy`).
+4. The endpoint behaves as expected (`curl /predict` returns the shape you predicted).
+
+Anything before (4) is "code written," not done. Aman has had to push back twice when "done" was declared at step 1.
+
+### Grep before you delete
+
+Small comments and config strings can be load-bearing. `make autoresearch-run` uses `sed` to find the line `# args: [REWRITE_ME]` in `jobs/autoresearch-job.yaml` and inject CLI flags. Deleting that comment during a cleanup pass broke the substitution silently — runs went out with the Dockerfile default (1 iter, dry-run) and exited. Before deleting any comment or renaming any string in a config file: `rg <string>` the repo first.
+
+### Cross-reference config flags across train + evaluate + predict
+
+If a `params.yaml` flag mutates the schema `train.py` sees, `src/evaluate.py` and `src/api.py` MUST apply the same transformation. The `add_charges_per_month` flag added a column in train; the saved sklearn pipeline expected it; evaluate didn't reproduce it; every iter that toggled the flag crashed `model.predict()`. Centralize feature engineering in one helper both train and evaluate import. Add tests that cover the "with-flag" path.
+
+### Pre-flight live test before triggering a 10-min CI run
+
+Unit tests don't catch prompt fragility. The system prompt told Sonnet 4.6 "return ONLY valid JSON," and 4.6 ignored it once the experiment history grew enough — it led with reasoning prose. Iters 4 and 5 of the smoke run failed because the prompt wasn't smoke-tested live before pushing. For changes to LLM prompts or output schemas: make ONE real API call with the production prompt locally before pushing.
+
+### Use `[skip ci]` for docs-only / lessons / e2e.md commits
+
+Every push to `main` triggers ~10–14 min of multi-arch Docker builds. Anything that doesn't change `src/`, `pipelines/`, `Dockerfile*`, `pyproject.toml`, `uv.lock`, or `data/` should land with `[skip ci]` in the subject. `gh run list` should not be cluttered with doc-update CI runs.
+
+### Don't claim a champion advanced unless it actually did
+
+`evaluate.py` only promotes when AUC strictly beats the existing `@champion`. The autoresearch loop's per-run "IMPROVED" log is *relative to its own session baseline*, not to the cluster registry. They can diverge — a run can "IMPROVE" 0.8162 → 0.8326 yet leave the cluster `@champion` unchanged because yesterday's champion was 0.8346. Verify with `mlflow.MlflowClient().get_model_version_by_alias(MODEL_NAME, "champion")` before claiming the served model changed.
+
 ## Tech stack
 
 | Tool | Version | Purpose |
@@ -265,12 +299,27 @@ Champion: `churn-model` v1 (alias `@champion` in cluster MLflow, re-bootstrapped
 - **GCP free-trial SSD cap**: 250 GB in `asia-south1`, **cannot be raised on free trial**. Current usage ~220 GB (2 Autopilot nodes × ~100 GB boot disks + 2× 5Gi regional PVCs replicated = 200 + 10 + 10). Adding a 3rd node fails because each new node needs another ~100 GB of SSD. Fit everything in 2 nodes by minimizing pod count; production fix would be GCS-backed minio + CloudSQL-backed KFP mysql to free PVC quota.
 - **MLflow image pinned to `v3.11.1`**: `k8s/mlflow.yaml` pins `ghcr.io/mlflow/mlflow:v3.11.1` (matches the migrated DB schema). Default `imagePullPolicy` for non-`:latest` tags is `IfNotPresent`, so pod restarts won't auto-pull a newer schema. **If you bump this tag**, first run a one-shot Job (image `ghcr.io/mlflow/mlflow:NEW_TAG`, sidecar `gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.11.4`, command `mlflow db upgrade postgresql://mlflow_user:$PASS@127.0.0.1:5432/mlflow_db`), then `kubectl rollout restart deployment/mlflow`. (Historical: an unpinned `:latest` was the source of recurring "Detected out-of-date database schema" CrashLoopBackOff incidents.)
 
-## Next session goals
+## Active direction (decided 2026-05-03)
 
-1. **Autoresearch as a Kubernetes Job** — current single-machine `make auto-experiment` lifted into an in-cluster Job (deploy-key SSH or PAT + GraphQL `createCommitOnBranch`, deploy as 5 small validatable PRs).
-2. **Dataset swap to IEEE-CIS Fraud Detection** — 590K rows × 433 features, AUC headroom 0.62 → 0.94 for the autoresearch trajectory.
-3. **Bad-baseline strategy** — start the autoresearch loop from `LogisticRegression(C=0.001)` with one feature so the trajectory is dramatic.
-4. **Long autoresearch run** — 50+ iterations on the new dataset, capture the AUC trajectory plot for the README.
-5. **Pin `mlflow:latest` to a specific tag** in `k8s/mlflow.yaml`.
-6. **Demo video** — end-to-end recording of the loop running on cloud.
-7. **Project rename** — likely from `customer_churn` to something more general about ML deployment for autoresearch.
+The project is being repositioned: **the churn dataset was an arbitrary choice; the framework should be a generic LLM-driven AutoML harness**. Anyone can plug in a binary-classification CSV and run autoresearch against it.
+
+**New project name:** `ml-deployment-system-for-autoresearch` (the GitHub repo and image registry will need to follow; Aman renames the repo manually in the GitHub UI, then we update the SSH remote, ArgoCD `source.repoURL`, and image tags).
+
+**Demo dataset:** IEEE-CIS Fraud Detection (Kaggle, 590K × 433). Bigger headroom (0.55–0.94) and more authentic ML problem than Telco Churn (7K × 19, ceiling 0.84).
+
+**Bad baseline:** `DecisionTreeClassifier(max_depth=1, max_features=1)` on a single feature. Should land near AUC 0.50–0.55. The point is to give the autoresearch loop a real trajectory to traverse on a real dataset.
+
+**Schema-in-params:** preprocess / train / evaluate must read `target_column`, `numeric_features`, `categorical_features`, `csv_path` from `params.yaml`. No more hardcoded `TARGET = "Churn"` or hardcoded feature lists. This is the actual "any binary CSV plugs in" move.
+
+### Pending work, in order
+
+1. **Rename + plug-and-play refactor + IEEE-CIS dataset + bad baseline** — one coordinated branch / PR. Don't slice it.
+2. **CI speedup** — drop arm64 from the inference image (GKE is amd64; arm64 is for local Mac dev only and can be built per-laptop), add buildx GHA cache, add path filters so docs-only changes don't trigger image rebuilds. Estimate: 14 min → 3-6 min on incremental, ~30 sec on docs-only.
+3. **First real autoresearch run** — 10-20 iters on IEEE-CIS, captured AUC trajectory plot.
+4. **Demo video** — Aman owns.
+
+### Explicitly out of scope
+
+- Evidently AI / drift monitoring / auto-retraining
+- Model serving benchmarking
+- Internet-facing serving
