@@ -1,6 +1,6 @@
 # ML Deployment System for Autoresearch
 
-A self-improving binary-classifier platform: drop in a CSV, declare its schema, and an LLM iteratively proposes code changes, trains them on Kubernetes, and ships winners to production via GitOps — no human approval needed.
+Drop in a binary-classification CSV, declare its schema, and an LLM iteratively proposes code changes, trains them on Kubernetes, and ships the winners to production via GitOps. Nobody clicks *approve*.
 
 ---
 
@@ -10,11 +10,11 @@ This is a system that improves a machine-learning model on its own. An AI (Claud
 
 ### For technical readers
 
-A Kubeflow Pipelines run trains and evaluates a candidate model on GKE. If its AUC strictly beats the current `@champion` alias in MLflow, the autoresearch loop bumps a deployment annotation in `k8s/` and pushes a commit via a GitHub App. ArgoCD reconciles the change, the inference Deployment rolls, and the new pods re-read `models:/classifier@champion` from MLflow at startup. Failed candidates never reach the Deployment, so production cannot regress. Dataset is plug-and-play through `configs/params.yaml` — no code knows the column names.
+A Kubeflow Pipelines run trains and evaluates a candidate model on GKE. If its AUC strictly beats the current `@champion` alias in MLflow, the autoresearch loop bumps a deployment annotation in `k8s/` and pushes a commit via a GitHub App. ArgoCD reconciles the change, the inference Deployment rolls, and the new pods re-read `models:/classifier@champion` from MLflow at startup. Failed candidates never edit the annotation, so the live model never gets worse than the last champion that won. Dataset is plug-and-play through `configs/params.yaml`; no code knows the column names.
 
 ---
 
-## Live demo
+## 🚀 Live demo
 
 | Surface | URL | What you see |
 |---|---|---|
@@ -22,7 +22,7 @@ A Kubeflow Pipelines run trains and evaluates a candidate model on GKE. If its A
 | Health | <http://34.180.37.1/health> | `model_version` of the currently-served champion |
 | MLflow | <http://34.180.20.197:5000> | All runs, all model versions, the `@champion` alias |
 | KFP | <http://34.93.2.209> | Pipeline DAGs in real time |
-| ArgoCD | <http://34.100.246.237> | Sync status, rollout history (admin / `Y6p9-krPfkEhm4Sd`) |
+| ArgoCD | <http://34.100.246.237> | Sync status, rollout history (login shown in the demo video) |
 
 ```bash
 curl -X POST http://34.180.37.1/predict \
@@ -36,23 +36,13 @@ curl -X POST http://34.180.37.1/predict \
 # → {"prediction":0,"probability":0.26,"model_version":"5"}
 ```
 
-## Demo Videos
+## 🎬 Demo video
 
-*Recording — drop link here.*
-
-### Full walkthrough
-
-### Part 1 — Blank deployment serving predictions
-
-### Part 2 — Auto-research running live
-
-### Part 3 — Champion promoted and ArgoCD rollout
-
-### Part 4 — Reviewing all experiments in MLflow
+*Loom walkthrough — link goes here.*
 
 ---
 
-## Architecture
+## 📐 Architecture
 
 Everything inside the GKE cluster, plus the GCP and GitHub services it depends on:
 
@@ -127,7 +117,7 @@ flowchart TB
 
 ### What's actually deployed
 
-Four artifact stores, each load-bearing for the loop. If any one is unhealthy, autoresearch stops.
+Four artifact stores. All four have to be healthy for the loop to run end-to-end; any one of them broken stalls everything.
 
 | # | Artifact | Where | Purpose |
 |---|---|---|---|
@@ -138,7 +128,7 @@ Four artifact stores, each load-bearing for the loop. If any one is unhealthy, a
 
 ---
 
-## The autoresearch loop
+## 🤖 The autoresearch loop
 
 Inspired by [Karpathy's autoresearch](https://github.com/karpathy/autoresearch). One iteration end-to-end:
 
@@ -172,7 +162,7 @@ sequenceDiagram
     end
 ```
 
-**The promotion is a chain, not a single API call.** Setting `@champion` in MLflow alone changes nothing in production — the running pods loaded their model at startup and hold it in memory. The annotation bump in `k8s/deployment.yaml` is what triggers the rolling restart that causes the pods to re-read MLflow. Failed iterations never edit the annotation, so production is incapable of regressing.
+**Promotion is a chain, not one API call.** Setting `@champion` in MLflow on its own changes nothing live; the running pods loaded their model at startup and hold it in memory. The annotation bump in `k8s/deployment.yaml` is what triggers the rolling restart, and the new pods read `@champion` again from MLflow on startup. Failed iterations never touch the annotation, so the live model can't get worse — only different.
 
 ### Who does what
 
@@ -194,7 +184,7 @@ make autoresearch-run AUTORESEARCH_N=20 AUTORESEARCH_HOURS=2
 
 ---
 
-## Pipeline stages
+## 🧪 Pipeline stages
 
 A Kubeflow pipeline run, defined in `pipelines/pipeline.py`:
 
@@ -204,7 +194,7 @@ A Kubeflow pipeline run, defined in `pipelines/pipeline.py`:
 | **train** | `train.csv` | `classifier.pkl`, `run_id.txt` | Fit sklearn `Pipeline` (StandardScaler + OneHotEncoder + chosen estimator), log to MLflow, register model |
 | **evaluate** | `test.csv`, `classifier.pkl` | `metrics.json` | Score model, log metrics, set `@champion` alias if AUC strictly improves |
 
-DVC is used **only** for data versioning — `data/*.dvc` files point at GCS-stored datasets so any git commit maps to exactly one dataset hash. KFP is the pipeline that actually runs.
+DVC here is for data versioning only. Each `data/*.dvc` is a pointer file in git with the blob in GCS, so any commit maps to one dataset hash. KFP is the pipeline runner.
 
 ### Plug-and-play schema
 
@@ -226,11 +216,11 @@ train:
   max_features: 1
 ```
 
-The baseline is intentionally bad (DecisionTree depth-1, one feature, AUC ≈ 0.55). The autoresearch loop's job is to traverse from there to a tuned model.
+The starting point is deliberately weak: depth-1 decision tree on one numeric feature, AUC around 0.55. A strong baseline would make the autoresearch loop a no-op, so I needed a baseline with somewhere to go.
 
 ---
 
-## Quick start
+## ⚡ Quick start
 
 ```bash
 # Install deps
@@ -249,11 +239,11 @@ make serve                            # POST localhost:8000/predict
 
 ---
 
-## GitOps: why ArgoCD (and why not Helm)
+## 🔁 GitOps: why ArgoCD (and why not Helm)
 
-This project uses **raw YAML manifests** + **ArgoCD** — no Helm, no Kustomize.
+This project uses raw YAML manifests with ArgoCD. No Helm, no Kustomize.
 
-ArgoCD's only job is to make the cluster match what's in git. Every ~3 minutes it compares `k8s/` against the live cluster state. If they differ, it applies the git version. That's GitOps — git is the source of truth for what's deployed.
+ArgoCD's only job is to make the cluster match what's in git. Every ~3 minutes it compares `k8s/` against the live cluster state, and if they differ, it applies the git version. Git is the source of truth for what's deployed.
 
 ```
 Without ArgoCD:                              With ArgoCD:
@@ -273,11 +263,11 @@ Someone runs kubectl apply                   Rolling update, automatic
 | Helm | Many environments (dev/staging/prod), templating | No — one cluster, one env |
 | Kustomize | Environment variants without Go templates | No — same reason |
 
-The `sed` line in CI that swaps the image tag is the one-line equivalent of `helm upgrade --set image.tag=...`. Helm pays for itself once you have multiple environments or 10+ services sharing config; with one of each, it would be ceremony for zero benefit.
+The one-line `sed` in CI that swaps the image tag does the same thing `helm upgrade --set image.tag=...` would. Helm earns its keep once you have multiple environments or many services sharing config. I have one cluster and four manifests; a Chart would be more code to maintain than the manifests it replaces.
 
 ---
 
-## Infrastructure
+## ☁️ Infrastructure
 
 | Component | Details |
 |---|---|
@@ -286,7 +276,7 @@ The `sed` line in CI that swaps the image tag is the one-line equivalent of `hel
 | MLflow artifacts | GCS bucket (`*-mlflow-artifacts-*`) |
 | DVC remote | GCS bucket (`customer-churn-dvc-remote`) |
 | Container registry | `ghcr.io/<user>/{churn-api,churn-kfp,autoresearch}` (multi-arch on amd64) |
-| Workload Identity | Pods bind to GCP SAs — no service-account keys |
+| Workload Identity | Pods bind to GCP SAs. No service-account keys mounted in containers. |
 | Secrets | `ANTHROPIC_API_KEY`, GitHub App PEM in GCP Secret Manager |
 
 ### Cluster setup
@@ -306,7 +296,7 @@ curl http://34.180.37.1/health   # → {"model_loaded": true, "model_version": "
 
 ---
 
-## Tools and why
+## 🛠️ Tools and why
 
 | Tool | Role | Why |
 |---|---|---|
@@ -317,27 +307,27 @@ curl http://34.180.37.1/health   # → {"model_loaded": true, "model_version": "
 | **GitHub Actions** | CI/CD | Lint, test, build images, push to ghcr.io. Path-filtered so docs-only changes don't trigger image rebuilds. |
 | **GitHub App + GraphQL** | Autoresearch's commit identity | The autoresearch Job authenticates as `ML-deployment-for-autoresearch`, signs commits via `createCommitOnBranch` so pushes carry verified-author signatures (no PAT, no service-account leakage). |
 | **GKE Autopilot** | Managed Kubernetes | No node management. Pay-per-pod. Stable LoadBalancer IPs. |
-| **CloudSQL** | Postgres for MLflow | Survives pod restarts (unlike SQLite-on-PVC). |
+| **CloudSQL** | Postgres for MLflow | Survives pod restarts. SQLite-on-PVC didn't; the registry got wiped twice before I swapped backends. |
 | **uv + ruff** | Python tooling | Fast, replace pip/poetry/pyenv and flake8/black/isort. |
 
 ---
 
-## Roadmap
+## 🗺️ Roadmap
 
 What's built next, roughly in order:
 
-- **IEEE-CIS Fraud Detection dataset** (590K rows, 433 features) — bigger headroom than Telco Churn. The bad-baseline → tuned-model trajectory plays out over more iterations on a more authentic problem.
+- **IEEE-CIS Fraud Detection dataset** (590K rows, 433 features). Telco Churn caps near AUC 0.84, which doesn't leave the loop much room to climb. IEEE-CIS gives the loop a real trajectory to traverse.
 - **20+ iteration autoresearch run** on IEEE-CIS, with the AUC-vs-iteration trajectory plot in this README.
-- **Cost trajectory plot** — Anthropic input/output tokens per iteration are already logged to MLflow; a Make target turns the history into a `$ spent vs. AUC gained` chart.
-- **Argo Rollouts canary** — replace the rolling Deployment with a canary that holds 10% traffic for N seconds and aborts on a `/health` regression. Auto-rollback on bad champion.
-- **API auth** — Cloudflare Access or a single shared API key in front of `/predict`. Currently open to the public internet for demo simplicity.
-- **CI MLflow** — CI today uses an ephemeral MLflow for `dvc repro`; promotions inside CI hit a throwaway DB. A stable CI-accessible MLflow endpoint would close that loop.
+- **Cost trajectory plot.** Anthropic input/output tokens per iteration are already logged to MLflow. A Make target turns the history into a `$ spent vs. AUC gained` chart.
+- **Argo Rollouts canary.** Replace the rolling Deployment with a canary that holds 10% traffic for N seconds and aborts on a `/health` regression. Auto-rollback on bad champion.
+- **API auth.** Cloudflare Access or a single shared API key in front of `/predict`. Open to the public internet right now because the demo URL has to work for whoever clicks it; not worth gating until that stops mattering.
+- **CI MLflow.** CI today spins up an ephemeral MLflow for `dvc repro`, so promotions inside CI hit a throwaway DB. A stable CI-accessible MLflow endpoint would close that loop.
 
 ### Current scope
 
-This is a portfolio system, not a 5-nines production deployment:
+A pet project I built to learn MLOps end-to-end, not a 5-nines production deployment. Choices that follow from that:
 
-- Single zone (`asia-south1-c`) — a zone outage takes everything down.
-- Free-trial GCP credits — IPs are stable per cluster lifetime, not forever.
-- No data-drift monitoring, no auto-retraining triggers — out of scope for this project; autoresearch is the retraining mechanism.
-- No model-serving benchmarking (TTFT, P99 latency) — handled in a separate project.
+- Single zone (`asia-south1-c`). A zone outage takes everything down.
+- Free-trial GCP credits, so the public IPs are stable per cluster lifetime but not forever.
+- No data-drift monitoring, no auto-retraining triggers. Autoresearch *is* the retraining mechanism here.
+- No model-serving benchmarking (TTFT, P99 latency). That work lives in a separate project.
