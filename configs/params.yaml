@@ -9,7 +9,23 @@ dataset:
   target_mapping: {"Yes": 1, "No": 0}
   drop_columns: [customerID]
   numeric_features: [tenure, MonthlyCharges, TotalCharges]
-  categorical_features: [Contract, InternetService, PaymentMethod, TechSupport, OnlineSecurity, OnlineBackup, DeviceProtection, StreamingTV, StreamingMovies, MultipleLines, gender, SeniorCitizen, Partner, Dependents, PhoneService, PaperlessBilling]
+  categorical_features:
+    - gender
+    - SeniorCitizen
+    - Partner
+    - Dependents
+    - PhoneService
+    - MultipleLines
+    - InternetService
+    - OnlineSecurity
+    - OnlineBackup
+    - DeviceProtection
+    - TechSupport
+    - StreamingTV
+    - StreamingMovies
+    - Contract
+    - PaperlessBilling
+    - PaymentMethod
 
 preprocess:
   test_size: 0.2
@@ -18,18 +34,16 @@ preprocess:
 train:
   model_type: HistGradientBoostingClassifier
   random_state: 42
-  max_depth: 6
-  n_estimators: 200
+  max_depth: 4
+  n_estimators: 300
   learning_rate: 0.05
-  subsample: 1.0
-
-  # Knobs the autoresearch loop may flip on
-  min_samples_split: 2
-  min_samples_leaf: 1
+  min_samples_leaf: 20
   class_weight: null
   bootstrap: true
-  max_features: 1
+  subsample: 1.0
   use_log_transform: false
+  max_features: 1
+  min_samples_split: 2
 
 evaluate:
   primary_metric: auc_roc
