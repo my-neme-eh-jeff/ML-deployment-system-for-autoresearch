@@ -114,8 +114,8 @@ Four artifact stores. All four must be healthy or the loop stalls.
 | # | Artifact | Where |
 |---|---|---|
 | 1 | `@champion` alias on `classifier` | MLflow + CloudSQL |
-| 2 | Inference image | `ghcr.io/<user>/churn-api` |
-| 3 | KFP base image | `ghcr.io/<user>/churn-kfp` |
+| 2 | Inference image | `ghcr.io/<user>/inference-api` |
+| 3 | KFP base image | `ghcr.io/<user>/pipeline-kfp` |
 | 4 | Autoresearch image | `ghcr.io/<user>/autoresearch` |
 
 ---
@@ -248,7 +248,7 @@ The one-line `sed` in CI that swaps the image tag does the same thing as `helm u
 | MLflow backend | CloudSQL Postgres 15 |
 | MLflow artifacts | GCS bucket |
 | DVC remote | GCS bucket |
-| Images | `ghcr.io/<user>/{churn-api, churn-kfp, autoresearch}` |
+| Images | `ghcr.io/<user>/{inference-api, pipeline-kfp, autoresearch}` |
 | Workload Identity | Pods bind to GCP SAs; no SA keys mounted |
 | Secrets | Anthropic key + GitHub App PEM in GCP Secret Manager |
 

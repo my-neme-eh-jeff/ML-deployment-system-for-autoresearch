@@ -1,25 +1,34 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: churn-api
-  namespace: churn-serving
+  name: inference-api
+  namespace: inference
   labels:
-    app: churn-api
+    app: inference-api
 spec:
   replicas: 2
   selector:
     matchLabels:
-      app: churn-api
+      app: inference-api
   template:
     metadata:
       labels:
-        app: churn-api
+        app: inference-api
+      # The autoresearch loop bumps these two annotations on every kept iter
+      # via a GitHub-App commit. Because they live on the pod template (not
+      # just metadata), changing them mutates the PodSpec hash and Kubernetes
+      # performs a native rolling restart. New pods reload `@champion` from
+      # MLflow at startup, so users see the latest model within the rollout
+      # window without any image rebuild.
+      annotations:
+        mlops/classifier-version: "1"
+        mlops/classifier-run-id: ""
     spec:
-      serviceAccountName: churn-api-sa
+      serviceAccountName: inference-api-sa
       containers:
-        - name: churn-api
+        - name: inference-api
           # CI rewrites this image SHA on every push to main.
-          image: ghcr.io/my-neme-eh-jeff/churn-api:f64958d9f445e1513219d93fc6843b535a05e944
+          image: ghcr.io/my-neme-eh-jeff/inference-api:latest
           imagePullPolicy: Always
           ports:
             - containerPort: 8000

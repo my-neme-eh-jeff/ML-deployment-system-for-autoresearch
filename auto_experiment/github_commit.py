@@ -6,6 +6,7 @@ GCP Secret Manager and is fetched via Workload Identity at run time.
 
 import base64
 import os
+import re
 import time
 from pathlib import Path
 
@@ -48,7 +49,12 @@ def get_installation_token(
 
 
 def create_branch_from_main(token: str, owner: str, repo: str, branch: str) -> str:
-    """Idempotent: returns the existing branch SHA if it already exists."""
+    """Idempotent: returns the existing branch SHA if it already exists.
+
+    Always creates from the *current* main HEAD, so each per-iter branch starts
+    from the latest state (including any [skip ci] commits CI pushed back from
+    a previous iter's merge).
+    """
     headers = {
         "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github+json",
@@ -75,6 +81,53 @@ def create_branch_from_main(token: str, owner: str, repo: str, branch: str) -> s
     )
     r.raise_for_status()
     return r.json()["object"]["sha"]
+
+
+def fetch_file_from_main(
+    token: str, owner: str, repo: str, path: str
+) -> tuple[str, str]:
+    """Returns (content, sha) for a file on the main branch.
+
+    Used by the autoresearch loop to read the *current* `k8s/deployment.yaml`
+    annotations before bumping them — so even if main moved between iters
+    (CI pushing a [skip ci] image-SHA bump), our bump applies on top of the
+    latest content rather than fighting it in a 3-way merge.
+    """
+    r = requests.get(
+        f"{GITHUB_API}/repos/{owner}/{repo}/contents/{path}",
+        params={"ref": "main"},
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+        },
+        timeout=30,
+    )
+    r.raise_for_status()
+    body = r.json()
+    return base64.b64decode(body["content"]).decode("utf-8"), body["sha"]
+
+
+def bump_deployment_annotations(content: str, version: str, run_id: str) -> str:
+    """Update `mlops/classifier-version` + `mlops/classifier-run-id` in
+    `k8s/deployment.yaml` content, in place.
+
+    Matches the existing two annotation lines (under `spec.template.metadata.annotations`)
+    and replaces just the value. Other deployment.yaml fields — image SHA bumped
+    by CI, replicas patched by HPA — are left untouched.
+    """
+    new = re.sub(
+        r'(mlops/classifier-version:\s*)"[^"]*"',
+        rf'\1"{version}"',
+        content,
+        count=1,
+    )
+    new = re.sub(
+        r'(mlops/classifier-run-id:\s*)"[^"]*"',
+        rf'\1"{run_id}"',
+        new,
+        count=1,
+    )
+    return new
 
 
 def commit_files_to_branch(
@@ -154,8 +207,15 @@ def commit_files_to_branch(
 
 
 def open_pull_request(
-    token: str, owner: str, repo: str, branch: str, title: str, body: str
-) -> str:
+    token: str,
+    owner: str,
+    repo: str,
+    branch: str,
+    title: str,
+    body: str,
+    auto_merge: bool = True,
+) -> tuple[str, str]:
+    """Open a PR; optionally enable auto-merge. Returns (html_url, node_id)."""
     r = requests.post(
         f"{GITHUB_API}/repos/{owner}/{repo}/pulls",
         headers={
@@ -166,7 +226,47 @@ def open_pull_request(
         timeout=30,
     )
     r.raise_for_status()
-    return r.json()["html_url"]
+    pr = r.json()
+    if auto_merge:
+        try:
+            _enable_auto_merge(token, pr["node_id"], title)
+        except Exception as e:
+            print(f"  WARN: failed to enable auto-merge: {e}")
+    return pr["html_url"], pr["node_id"]
+
+
+def _enable_auto_merge(token: str, pr_node_id: str, commit_headline: str) -> None:
+    """Tell GitHub to merge the PR automatically when required checks pass.
+
+    With branch protection requiring `lint-and-test` + `compile-kfp`, those run
+    on every PR (~1 min) and the merge fires immediately after they go green.
+    Without required checks, GitHub merges right away.
+    """
+    mutation = """
+    mutation($pr:ID!, $headline:String!) {
+      enablePullRequestAutoMerge(input:{
+        pullRequestId:$pr,
+        mergeMethod:SQUASH,
+        commitHeadline:$headline
+      }) { clientMutationId }
+    }
+    """
+    r = requests.post(
+        GITHUB_GRAPHQL,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+        },
+        json={
+            "query": mutation,
+            "variables": {"pr": pr_node_id, "headline": commit_headline},
+        },
+        timeout=30,
+    )
+    r.raise_for_status()
+    body = r.json()
+    if body.get("errors"):
+        raise RuntimeError(f"auto-merge GraphQL errors: {body['errors']}")
 
 
 def github_config_from_env() -> dict | None:

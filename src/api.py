@@ -83,10 +83,27 @@ def predict(req: PredictRequest):
         prediction = int(model.predict(df)[0])
         probability = float(model.predict_proba(df)[0][1])
     except Exception as e:
+        logger.warning(
+            "predict failed model_version=%s features=%s err=%s",
+            model_version,
+            list(req.data.keys()),
+            e,
+        )
         return JSONResponse(
             status_code=422,
             content={"error": f"Prediction failed: {e}"},
         )
+    # Per-request attribution: which model version served this prediction,
+    # what input shape, what was returned. Lets ops trace any complaint about
+    # a specific prediction back to a specific model version (and through
+    # MLflow, to the autoresearch iteration that produced it).
+    logger.info(
+        "predict ok model_version=%s features=%d prediction=%d probability=%.4f",
+        model_version,
+        len(req.data),
+        prediction,
+        probability,
+    )
     return {
         "prediction": prediction,
         "probability": round(probability, 4),

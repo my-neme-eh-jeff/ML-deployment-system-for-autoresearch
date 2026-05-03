@@ -9,10 +9,7 @@ import argparse
 
 from kfp import compiler, dsl
 
-# Image name still `churn-kfp` for now — CI publishes that path. The rename to
-# `pipeline-kfp` will happen atomically in a follow-up PR that also updates the
-# Docker push target in .github/workflows/ci.yaml.
-BASE_IMAGE = "ghcr.io/my-neme-eh-jeff/churn-kfp:latest"
+BASE_IMAGE = "ghcr.io/my-neme-eh-jeff/pipeline-kfp:latest"
 
 
 @dsl.component(base_image=BASE_IMAGE)

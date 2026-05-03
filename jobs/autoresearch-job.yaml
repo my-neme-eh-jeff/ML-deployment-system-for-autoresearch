@@ -4,7 +4,7 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: autoresearch-smoke
-  namespace: churn-serving
+  namespace: inference
 spec:
   backoffLimit: 0
   ttlSecondsAfterFinished: 3600
@@ -17,7 +17,7 @@ spec:
       restartPolicy: Never
       containers:
         - name: loop
-          image: ghcr.io/my-neme-eh-jeff/churn-autoresearch:latest
+          image: ghcr.io/my-neme-eh-jeff/autoresearch-loop:latest
           imagePullPolicy: Always
           # `make autoresearch-run` rewrites the next line via sed.
           # args: [REWRITE_ME]
@@ -35,7 +35,7 @@ spec:
             - name: GITHUB_OWNER
               value: "my-neme-eh-jeff"
             - name: GITHUB_REPO
-              value: "customer_churn_CICD"
+              value: "ML-deployment-system-for-autoresearch"
             - name: GCP_PROJECT
               value: "project-8018ed81-1dfe-470e-aad"
             - name: GITHUB_PEM_SECRET

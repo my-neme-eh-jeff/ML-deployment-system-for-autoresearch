@@ -4,13 +4,13 @@
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
-  name: churn-api-pdb
-  namespace: churn-serving
+  name: inference-api-pdb
+  namespace: inference
 spec:
   minAvailable: 1
   selector:
     matchLabels:
-      app: churn-api
+      app: inference-api
 ---
 apiVersion: policy/v1
 kind: PodDisruptionBudget

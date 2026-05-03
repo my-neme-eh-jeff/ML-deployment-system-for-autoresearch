@@ -1,17 +1,17 @@
-# Horizontal Pod Autoscaler for churn-api.
+# Horizontal Pod Autoscaler for inference-api.
 # Scales between 2 and 10 replicas based on CPU/memory utilisation.
 # Scale-up is fast (100% increase per 30s); scale-down is gradual (50% per 60s
 # with 5-minute stabilisation window) to avoid thrashing.
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
-  name: churn-api-hpa
-  namespace: churn-serving
+  name: inference-api-hpa
+  namespace: inference
 spec:
   scaleTargetRef:
     apiVersion: apps/v1
     kind: Deployment
-    name: churn-api
+    name: inference-api
   minReplicas: 2
   maxReplicas: 10
   metrics:
