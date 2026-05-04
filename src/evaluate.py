@@ -47,6 +47,13 @@ def evaluate(
     dataset = cfg["dataset"]
     train_params = cfg["train"]
     target = dataset["target_column"]
+    # Promotion threshold must match the autoresearch loop's `min_improvement`.
+    # Without this, evaluate.py promotes on any positive delta but the loop only
+    # opens a PR when delta ≥ min_improvement — diverging the registry from the
+    # deployed pods (registry advances, no PR fires, ArgoCD never rolls).
+    min_improvement = float(
+        cfg.get("auto_experiment", {}).get("min_improvement", 0.001)
+    )
 
     df = pd.read_csv(test_path)
     X = df.drop(columns=[target])
@@ -95,7 +102,7 @@ def evaluate(
     if champion_metric is None:
         client.set_registered_model_alias(MODEL_NAME, "champion", new_version.version)
         print(f"No existing champion. v{new_version.version} promoted to champion.")
-    elif metrics[PRIMARY_METRIC] > champion_metric:
+    elif metrics[PRIMARY_METRIC] >= champion_metric + min_improvement:
         if auto_promote:
             client.set_registered_model_alias(
                 MODEL_NAME, "challenger", new_version.version
@@ -105,7 +112,7 @@ def evaluate(
             )
             print(
                 f"v{new_version.version} ({metrics[PRIMARY_METRIC]}) beats champion "
-                f"({champion_metric}) — promoted."
+                f"({champion_metric}) by ≥{min_improvement} — promoted."
             )
         else:
             client.set_registered_model_alias(
@@ -114,9 +121,10 @@ def evaluate(
             print(f"v{new_version.version} tagged as challenger (auto_promote=False).")
     else:
         client.set_registered_model_alias(MODEL_NAME, "challenger", new_version.version)
+        delta = metrics[PRIMARY_METRIC] - champion_metric
         print(
-            f"v{new_version.version} ({metrics[PRIMARY_METRIC]}) does not beat champion "
-            f"({champion_metric}) — challenger only."
+            f"v{new_version.version} ({metrics[PRIMARY_METRIC]}) vs champion "
+            f"({champion_metric}) Δ={delta:+.4f} < {min_improvement} — challenger only."
         )
 
 
