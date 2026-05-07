@@ -1,4 +1,4 @@
-"""LLM-driven experiment loop for the churn model."""
+"""LLM-driven experiment loop for the classifier."""
 
 import argparse
 import csv
@@ -31,6 +31,10 @@ EDITABLE_FILES = [
 HISTORY_PATH = PROJECT_ROOT / "auto_experiment" / "history.tsv"
 PROGRAM_MD_PATH = PROJECT_ROOT / "auto_experiment" / "program.md"
 METRICS_PATH = PROJECT_ROOT / "metrics.json"
+
+# Per-iteration KFP run ceiling. Heavy proposals on IEEE-CIS (200K × 339) can
+# push past 15 min on bigger HGB / boosting trees; 30 min keeps them in scope.
+KFP_TIMEOUT_SECONDS = 1800
 
 
 # ── Startup checks ──────────────────────────────────────────────────────────
@@ -748,6 +752,9 @@ def run_loop(
     total_input_tokens = 0
     total_output_tokens = 0
 
+    max_no_improvement = int(auto_cfg.get("max_iterations_without_improvement", 0))
+    iters_since_improvement = 0
+
     gh_config = github_commit.github_config_from_env() if not dry_run else None
     run_id = os.environ.get("AUTORESEARCH_RUN_ID") or datetime.now(
         timezone.utc
@@ -780,6 +787,14 @@ def run_loop(
             claude_result = call_claude(state, model=claude_model)
         except Exception as e:
             print(f"  ERROR calling Claude: {e}")
+            iters_since_improvement += 1
+            if max_no_improvement > 0 and iters_since_improvement >= max_no_improvement:
+                print(
+                    f"\n⏸ Early stop after iter {i}: "
+                    f"{iters_since_improvement} consecutive iters without improvement "
+                    f"(threshold={max_no_improvement})."
+                )
+                break
             continue
 
         proposal = claude_result["proposal"]
@@ -819,7 +834,7 @@ def run_loop(
         ruff_fix(proposal)
 
         print(f"[{i}/{n_experiments}] Running pipeline...")
-        pipeline_result = run_pipeline(timeout=900)
+        pipeline_result = run_pipeline(timeout=KFP_TIMEOUT_SECONDS)
 
         if not pipeline_result["success"]:
             print(f"  PIPELINE FAILED: {pipeline_result['stderr'][:300]}")
@@ -834,6 +849,14 @@ def run_loop(
                 usage=usage,
             )
             log_to_tsv(i, proposal, pipeline_result, best_auc, "failed", usage=usage)
+            iters_since_improvement += 1
+            if max_no_improvement > 0 and iters_since_improvement >= max_no_improvement:
+                print(
+                    f"\n⏸ Early stop after iter {i}: "
+                    f"{iters_since_improvement} consecutive iters without improvement "
+                    f"(threshold={max_no_improvement})."
+                )
+                break
             continue
 
         new_auc = pipeline_result["auc"]
@@ -862,6 +885,7 @@ def run_loop(
             prev_best = best_auc
             best_auc = new_auc
             log_to_mlflow(i, proposal, pipeline_result, prev_best, True, usage=usage)
+            iters_since_improvement = 0
         else:
             print(
                 f"  ✗ REVERTED: {new_auc:.4f} did not beat {best_auc:.4f} (delta={delta:+.4f})"
@@ -869,6 +893,14 @@ def run_loop(
             revert_files(originals)
             log_to_mlflow(i, proposal, pipeline_result, best_auc, False, usage=usage)
             log_to_tsv(i, proposal, pipeline_result, best_auc, "reverted", usage=usage)
+            iters_since_improvement += 1
+            if max_no_improvement > 0 and iters_since_improvement >= max_no_improvement:
+                print(
+                    f"\n⏸ Early stop after iter {i}: "
+                    f"{iters_since_improvement} consecutive iters without improvement "
+                    f"(threshold={max_no_improvement})."
+                )
+                break
 
     total_elapsed = time.time() - start_time
     print(f"\n{'=' * 60}")

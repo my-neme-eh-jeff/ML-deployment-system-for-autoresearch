@@ -1,8 +1,8 @@
-# Customer Churn MLOps Project
+# ML Deployment System for Autoresearch
 
 ## Project overview
 
-End-to-end MLOps project for customer churn prediction. The ML model is intentionally simple (RandomForest) — the real focus is the infrastructure: DVC pipelines, MLflow experiment tracking + model registry, Kubeflow Pipelines, ArgoCD GitOps, and CI/CD.
+End-to-end MLOps project: any binary-classification CSV plugs in via `params.yaml`, an LLM (Claude) iteratively improves the model, GitOps reconciles to production. The ML model itself is intentionally simple — the real focus is the infrastructure: DVC pipelines, MLflow experiment tracking + model registry, Kubeflow Pipelines, ArgoCD GitOps, and CI/CD.
 
 **Owner:** Aman — targeting MLOps Engineer and Data Engineer roles. This project is a portfolio/learning piece.
 
@@ -124,7 +124,7 @@ To connect kubectl to GKE: `gcloud container clusters get-credentials mlops-clus
 
 ### DVC pipeline (local development)
 ```
-data/churn_data.csv → preprocess → train.csv/test.csv → train → churn_model.pkl + run_id.txt → evaluate → metrics.json
+data/<dataset>.{csv,parquet} → preprocess → train.csv/test.csv → train → classifier.pkl + run_id.txt → evaluate → metrics.json
 ```
 - Run with `make repro` (sets `MLFLOW_TRACKING_URI=http://localhost:5000` automatically)
 - MLflow port-forward must be running first (`make mlflow` in separate terminal)
@@ -137,13 +137,13 @@ data/churn_data.csv → preprocess → train.csv/test.csv → train → churn_mo
 - Uses `--allowed-hosts=*` to allow requests from pods via cluster DNS (`mlflow.mlflow.svc.cluster.local`). Without this, MLflow 3.x's DNS rebinding protection returns 403.
 - `train.py` writes `models/run_id.txt` after training so `evaluate.py` logs to the exact run
 - `evaluate.py` reads `run_id.txt` — no race-condition "most recent run" search
-- Every `train` run registers a new model version under `churn-model`
+- Every `train` run registers a new model version under `classifier`
 - `evaluate` compares AUC-ROC against current `@champion` alias; better → auto-promotes
 - `src/promote.py` for manual promotion (`make promote`)
 - **After fresh MLflow deploy**: run `make mlflow-kill && make mlflow` then `make bootstrap` to seed the model registry.
 
 ### API serving (inference-api)
-- Loads champion model at startup via `mlflow.sklearn.load_model("models:/churn-model@champion")`
+- Loads champion model at startup via `mlflow.sklearn.load_model("models:/classifier@champion")`
 - `MLFLOW_TRACKING_URI=http://mlflow.mlflow.svc.cluster.local:5000` set in k8s/deployment.yaml
 - `imagePullPolicy: Always` — always pulls from `ghcr.io/my-neme-eh-jeff/inference-api`
 - Returns 503 from `/health` if model not loaded (pod won't receive traffic until ready)
@@ -170,7 +170,7 @@ data/churn_data.csv → preprocess → train.csv/test.csv → train → churn_mo
 - Node.js: uses `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24=true` and `setup-uv@v6` to avoid Node.js 20 deprecation warnings
 
 ### Data storage
-- Raw dataset: Kaggle Telco Customer Churn (7,043 rows, 19 features)
+- Raw dataset (active): Kaggle IEEE-CIS Fraud Detection (200K row subsample, 339 numeric + ~14 categorical features). Pluggable via `params.yaml`.
 - DVC remote: `gs://customer-churn-dvc-remote/dvc-store` (GCS)
 - MLflow artifacts: stored in cluster PVC at `/mlflow/artifacts/`, served via `--serve-artifacts`
 
@@ -207,17 +207,17 @@ src/
   promote.py        — Manual champion promotion script
   api.py            — FastAPI inference server — loads @champion from MLflow registry at startup
 pipelines/
-  churn_pipeline.py — Kubeflow Pipelines version of the same DAG
-  churn_pipeline.yaml — Compiled KFP pipeline (generated)
+  pipeline.py        — Kubeflow Pipelines version of the same DAG
+  pipeline.yaml      — Compiled KFP pipeline (generated)
 tests/
   conftest.py       — Fixtures: sample_raw_data, sample_processed_data
   test_preprocess.py — 5 tests
   test_train.py     — 3 tests
   test_evaluate.py  — 2 tests
 data/
-  churn_data.csv.dvc — DVC pointer to raw dataset
+  ieee_cis.parquet.dvc — DVC pointer to raw dataset
   processed/         — Generated train.csv, test.csv, stats.json
-models/              — Generated churn_model.pkl + run_id.txt (both DVC-tracked)
+models/              — Generated classifier.pkl + run_id.txt (both DVC-tracked)
 k8s/
   mlflow.yaml        — MLflow Deployment + Service + PVC (namespace: mlflow)
   deployment.yaml    — inference-api Deployment (namespace: inference)
@@ -237,7 +237,7 @@ argocd/
 | Precision | 0.6117 |
 | Recall | 0.4759 |
 
-Champion: `churn-model` v1 (alias `@champion` in cluster MLflow, re-bootstrapped 2026-04-02)
+Champion: `classifier` v1 (alias `@champion` in cluster MLflow, re-bootstrapped 2026-04-02)
 
 ## What's done vs TODO
 
@@ -274,7 +274,7 @@ Champion: `churn-model` v1 (alias `@champion` in cluster MLflow, re-bootstrapped
 - **MLflow --serve-artifacts**: Server proxies all artifact uploads/downloads via HTTP. Clients (local training via port-forward, pods via ClusterIP) don't need direct GCS/filesystem access — everything goes through the MLflow HTTP API.
 - **ArgoCD runs --insecure (HTTP)**: TLS + gRPC-web over kubectl port-forward is unreliable (drops connections). Running on HTTP port 8080 is stable. Exposed via LoadBalancer (no port-forward). This is standard for local dev.
 - **ArgoCD patched via args, not command**: The container entrypoint is `tini --`, so `command` would override tini. Use `args: ["argocd-server", "--insecure"]` instead.
-- **api.py loads from MLflow registry, not disk**: `mlflow.sklearn.load_model("models:/churn-model@champion")` — champion alias is the single source of truth. No model baked into image.
+- **api.py loads from MLflow registry, not disk**: `mlflow.sklearn.load_model("models:/classifier@champion")` — champion alias is the single source of truth. No model baked into image.
 - **run_id.txt links train and evaluate**: evaluate.py reads `models/run_id.txt` written by train.py. This avoids the race condition of searching for "most recent run".
 - **CI uses ephemeral MLflow**: GitHub Actions starts a local MLflow server for the pipeline run. The cluster MLflow is for production/demo only.
 - **imagePullPolicy: Always + ghcr.io**: Image must be public on ghcr.io (set in GitHub Packages settings). No image pull secret configured.

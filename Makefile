@@ -284,7 +284,7 @@ k8s-status:
 	@kubectl get pods -n mlflow --no-headers 2>/dev/null || echo "  namespace not found"
 	@echo "── ArgoCD pods ──"
 	@kubectl get pods -n argocd --no-headers 2>/dev/null || echo "  namespace not found"
-	@echo "── Churn serving ──"
+	@echo "── Inference serving ──"
 	@kubectl get pods -n inference --no-headers 2>/dev/null || echo "  namespace not found"
 
 demo:

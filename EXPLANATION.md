@@ -28,7 +28,7 @@
 
 ## 1. The One-Sentence Version
 
-An LLM (Claude) proposes changes to improve a churn prediction model, KFP trains and evaluates each proposal on Kubernetes, and if the model improves, the auto-loop pushes a git commit that makes ArgoCD automatically roll out new serving pods that load the improved model from MLflow.
+An LLM (Claude) proposes changes to improve a binary-classification model, KFP trains and evaluates each proposal on Kubernetes, and if the model improves, the auto-loop pushes a git commit that makes ArgoCD automatically roll out new serving pods that load the improved model from MLflow.
 
 ---
 
@@ -76,7 +76,7 @@ gs://customer-churn-dvc-remote/
 │                        Read by: dvc pull (on laptop or CI)
 │
 └── raw/
-    └── churn_data.csv ← Raw CSV uploaded manually for KFP access
+    └── ieee_cis.parquet ← Raw dataset uploaded manually for KFP access
                          Written by: gsutil cp (one-time)
                          Read by: KFP preprocess step
 
@@ -217,7 +217,7 @@ Components:
 
 ```text
 1. You (or auto_loop.py) call:
-   kfp_client.create_run_from_pipeline_package("churn_pipeline.yaml", args={...})
+   kfp_client.create_run_from_pipeline_package("pipeline.yaml", args={...})
          │
          │  HTTP POST to ml-pipeline API server
          ▼
@@ -251,7 +251,7 @@ Components:
 4. Steps execute sequentially (preprocess → train → evaluate):
 
    PREPROCESS POD:
-     Input:  raw_data_gcs_path = "gs://customer-churn-dvc-remote/raw/churn_data.csv"
+     Input:  raw_data_gcs_path = "gs://customer-churn-dvc-remote/raw/ieee_cis.parquet"
              (reads directly from GCS using gcsfs library)
      Output: train_csv (KFP Dataset artifact → stored in MinIO)
              test_csv  (KFP Dataset artifact → stored in MinIO)
@@ -319,7 +319,7 @@ Components:
 
 Application definition: argocd/application.yaml
   source:
-    repoURL: https://github.com/my-neme-eh-jeff/customer_churn_CICD.git
+    repoURL: https://github.com/my-neme-eh-jeff/ML-deployment-system-for-autoresearch.git
     targetRevision: main
     path: k8s                ← ArgoCD watches EVERY yaml file in this directory
   destination:
@@ -335,7 +335,7 @@ Application definition: argocd/application.yaml
 
 ```text
 Every ~3 minutes (or on webhook):
-  1. Clone https://github.com/my-neme-eh-jeff/customer_churn_CICD.git
+  1. Clone https://github.com/my-neme-eh-jeff/ML-deployment-system-for-autoresearch.git
   2. Read all YAML files in k8s/ directory
   3. Compare each resource against the live cluster state
   4. If different → kubectl apply the git version
@@ -421,8 +421,8 @@ Readiness probe:   GET /health every 10s, initial delay 10s
 ```text
 GET  /health/live  → {"status": "alive"}                     (always 200)
 GET  /health       → {"status": "healthy", "model_loaded": true}  (200 or 503)
-POST /predict      → {"churn": 1, "churn_probability": 0.71}
-     Body: JSON with 19 customer features
+POST /predict      → {"prediction": 1, "probability": 0.71, "model_version": "N"}
+     Body: JSON with feature columns matching params.yaml schema
 ```
 
 **Why FastAPI over Flask / KServe / Seldon?** FastAPI has async support, automatic OpenAPI docs, and Pydantic validation. KServe/Seldon are ML-specific serving frameworks that add auto-scaling, canary deployments, and multi-model serving — but they require Istio/Knative (heavy dependencies that won't fit on our 2-node cluster). For a single sklearn model on CPU, FastAPI is the right level of complexity. In interviews: "I used FastAPI to understand serving internals; for production multi-model serving I'd evaluate KServe."
@@ -457,8 +457,8 @@ Job 2: pipeline (runs only on main branch pushes, after lint passes)
   Duration: ~14 minutes (docker buildx is slow for multi-arch)
 
 Job 3: compile-kfp (runs on every push after lint passes)
-  ├── python pipelines/churn_pipeline.py (compiles to YAML)
-  └── Upload churn_pipeline.yaml as GitHub Actions artifact
+  ├── python pipelines/pipeline.py (compiles to YAML)
+  └── Upload pipeline.yaml as GitHub Actions artifact
   Duration: ~15 seconds
 ```
 
@@ -517,8 +517,8 @@ Job 3: compile-kfp (runs on every push after lint passes)
 
 ```text
 Git repository:                          GCS bucket:
-  data/churn_data.csv.dvc  ──────────→  gs://customer-churn-dvc-remote/dvc-store/ab/cd1234...
-  (12 bytes, hash pointer)               (954KB, actual CSV file)
+  data/ieee_cis.parquet.dvc  ──────────→  gs://customer-churn-dvc-remote/dvc-store/ab/cd1234...
+  (12 bytes, hash pointer)               (binary parquet artifact)
   
   dvc.lock                 ──────────→  Hashes of ALL pipeline stage inputs/outputs
   (records exact state)                  If any input changes, the stage re-runs
@@ -530,17 +530,17 @@ Git repository:                          GCS bucket:
 stages:
   preprocess:
     cmd: uv run python src/preprocess.py
-    deps: [data/churn_data.csv, src/preprocess.py, configs/params.yaml]
+    deps: [data/ieee_cis.parquet, src/preprocess.py, configs/params.yaml]
     outs: [data/processed/train.csv, data/processed/test.csv, data/processed/stats.json]
 
   train:
     cmd: uv run python src/train.py
     deps: [data/processed/train.csv, src/train.py, configs/params.yaml]
-    outs: [models/churn_model.pkl, models/run_id.txt]
+    outs: [models/classifier.pkl, models/run_id.txt]
 
   evaluate:
     cmd: uv run python src/evaluate.py
-    deps: [data/processed/test.csv, models/churn_model.pkl, src/evaluate.py, models/run_id.txt]
+    deps: [data/processed/test.csv, models/classifier.pkl, src/evaluate.py, models/run_id.txt]
     metrics: [metrics.json]
 ```
 
@@ -1088,18 +1088,8 @@ make cluster-wake     # Scale back up. Same IPs. ~3 min.
 ```bash
 curl -X POST http://34.47.242.89/predict \
   -H "Content-Type: application/json" \
-  -d '{
-    "gender": "Female", "SeniorCitizen": 0, "Partner": "Yes",
-    "Dependents": "No", "tenure": 12, "PhoneService": "Yes",
-    "MultipleLines": "No", "InternetService": "Fiber optic",
-    "OnlineSecurity": "No", "OnlineBackup": "No",
-    "DeviceProtection": "No", "TechSupport": "No",
-    "StreamingTV": "No", "StreamingMovies": "No",
-    "Contract": "Month-to-month", "PaperlessBilling": "Yes",
-    "PaymentMethod": "Electronic check",
-    "MonthlyCharges": 70.35, "TotalCharges": 846.0
-  }'
-# → {"churn": 1, "churn_probability": 0.71}
+  -d '{"data": { ...feature columns matching params.yaml schema... }}'
+# → {"prediction": 1, "probability": 0.71, "model_version": "N"}
 ```
 
 ### Common commands

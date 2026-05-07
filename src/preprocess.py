@@ -45,8 +45,7 @@ def preprocess(
             df = df.drop(columns=[col])
 
     # Coerce numeric columns to float and median-fill any NaNs that result —
-    # handles "blank" strings and similar quirks generically (e.g. TotalCharges
-    # in the Telco churn dataset has whitespace strings for some new customers).
+    # handles "blank" / non-numeric strings generically.
     for col in numeric:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")

@@ -18,30 +18,12 @@ A system that improves an ML model on its own.
 ### For technical readers
 
 - A Kubeflow Pipelines run trains and evaluates each candidate on GKE.
-- If AUC strictly beats the current `@champion` alias in MLflow, the autoresearch loop bumps an annotation in `k8s/` and pushes via a GitHub App.
+- If AUC beats the current `@champion` alias in MLflow by ≥ `min_improvement` (configurable, default 0.001), the autoresearch loop bumps an annotation in `k8s/` and pushes via a GitHub App.
 - ArgoCD reconciles, the inference Deployment rolls, new pods re-read `models:/classifier@champion` from MLflow at startup.
 - Failed candidates never edit the annotation. The live model can't get worse than the last champion that won.
 - Dataset is plug-and-play through `configs/params.yaml`. No code knows the column names.
 
 ---
-
-## 🚀 Try it live
-
-```bash
-curl -X POST <API>/predict \
-  -H "Content-Type: application/json" \
-  -d '{"data":{"gender":"Female","SeniorCitizen":0,"Partner":"Yes","Dependents":"No",
-       "tenure":12,"PhoneService":"Yes","MultipleLines":"No",
-       "InternetService":"Fiber optic","OnlineSecurity":"No","OnlineBackup":"No",
-       "DeviceProtection":"No","TechSupport":"No","StreamingTV":"No",
-       "StreamingMovies":"No","Contract":"Month-to-month","PaperlessBilling":"Yes",
-       "PaymentMethod":"Electronic check","MonthlyCharges":70.35,"TotalCharges":846.0}}'
-
-# Response
-# {"prediction": 0, "probability": 0.26, "model_version": "5"}
-```
-
-The cluster is brought up only for demos, so live URLs aren't pinned here. They appear in the demo video.
 
 ## 🎬 Demo video
 
@@ -185,7 +167,7 @@ Defined in `pipelines/pipeline.py`:
 |---|---|---|
 | **preprocess** | `train.csv`, `test.csv` | Reads schema from `params.yaml`, stratified 80/20 split |
 | **train** | `classifier.pkl`, `run_id.txt` | sklearn `Pipeline` (Scaler + OHE + estimator), logged to MLflow |
-| **evaluate** | `metrics.json` | Sets `@champion` if AUC strictly improves |
+| **evaluate** | `metrics.json` | Sets `@champion` if AUC beats current by ≥ `min_improvement` |
 
 DVC handles data versioning only. Each `data/*.dvc` is a pointer in git, blob in GCS. KFP is the pipeline runner.
 
@@ -195,24 +177,34 @@ Swap datasets by replacing this block in `configs/params.yaml`:
 
 ```yaml
 dataset:
-  csv_path: data/churn_data.csv
-  target_column: Churn
-  target_mapping: {"Yes": 1, "No": 0}
-  drop_columns: [customerID]
-  numeric_features: [tenure]
-  categorical_features: []
+  csv_path: data/ieee_cis.parquet
+  target_column: isFraud
+  drop_columns: [TransactionID, TransactionDT]
+  numeric_features: [TransactionAmt]
+  categorical_features: [ProductCD]
 
 train:
-  model_type: DecisionTreeClassifier   # bad starting point
-  max_depth: 1
-  max_features: 1
+  model_type: DecisionTreeClassifier   # deliberately weak starting point
+  max_depth: null
+  max_features: null
 ```
 
-The starting point is deliberately weak: depth-1 tree, one feature, AUC around 0.55. A strong baseline would make the loop a no-op.
+The starting point is deliberately weak: vanilla decision tree on a 2-feature subset. A strong baseline would make the loop a no-op — the climb is the point.
 
 ---
 
-## ⚡ Quick start
+## 🏁 Spin it up
+
+```bash
+make cluster-wake                              # bring up GKE + CloudSQL + KFP + ArgoCD
+make reset-for-fresh-run                       # baseline classifier@v1 (vanilla DT)
+make autoresearch-run AUTORESEARCH_N=20        # let Claude iterate 20×
+make cluster-sleep                             # tear down to ~$0/day idle
+```
+
+You'll need a GCP project, an Anthropic API key, and a GitHub App PEM in GCP Secret Manager. Setup commands live in `Makefile` — `make` lists them.
+
+For local dev:
 
 ```bash
 uv sync                              # install
@@ -281,7 +273,7 @@ The one-line `sed` in CI that swaps the image tag does the same thing as `helm u
 
 ### Current scope
 
-A pet project to learn MLOps end-to-end. Not a 5-nines production deployment.
+Personal portfolio project — not a 5-nines production deployment.
 
 - Single zone. A zone outage takes everything down.
 - Free-trial GCP credits, so the public IPs are stable per cluster lifetime but not forever.
