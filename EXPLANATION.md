@@ -21,8 +21,10 @@
 11. [DVC vs KFP](#11-dvc-vs-kfp--why-both-exist)
 12. [The Two-Workload Split](#12-the-two-workload-split-controller--kfp-pods)
 13. [Cost and Sleep/Wake](#13-cost-and-sleepwake)
-14. [Known Limitations](#14-known-limitations-honest-assessment)
+14. [Design Choices Worth Calling Out](#14-design-choices-worth-calling-out)
 15. [Quick Reference](#15-quick-reference)
+16. [Pitching & Industry Positioning](#16-pitching--industry-positioning)
+17. [Demo Recording Plan](#17-demo-recording-plan)
 
 ---
 
@@ -1059,16 +1061,33 @@ make cluster-wake     # Scale back up. Same IPs. ~3 min.
 
 ---
 
-## 14. Known Limitations (Honest Assessment)
+## 14. Design Choices Worth Calling Out
 
-| Item | Status | Detail |
-|------|--------|--------|
-| CI champion promotion | Fake | CI uses ephemeral MLflow; trained model is discarded |
-| Auto-loop on cluster | Local only | Runs on laptop, not as a K8s Job (yet) |
-| TLS / HTTPS | No | HTTP only, no domain, no cert-manager |
-| Single zone | Yes | asia-south1, no HA, free tier |
-| Hot model reload | No | Pods must restart to load new champion |
-| KFP evaluate race | Exists | Uses "latest run" search, should pass run_id |
+Three engineering decisions that shape how the system behaves under autoresearch load. These are deliberate, not accidents.
+
+### 14.1 Annotation-driven rollout, not image-tag-only
+
+The container image is published with the commit SHA tag and `:latest`; pods use `imagePullPolicy: Always`. The thing that *triggers* a rollout is **not** the image change — it's the bump of `mlops/classifier-version` and `mlops/classifier-run-id` annotations on `spec.template.metadata` of the inference Deployment. Mutating annotations on the pod template changes the PodSpec hash, which is what Kubernetes uses to decide "is this a new ReplicaSet?" → rolling restart fires.
+
+**Why not just bump the image SHA?** Two reasons.
+1. **Audit record in git.** The annotation in `k8s/deployment.yaml` records *which trained model is live in production* — readable in `git log` without querying MLflow.
+2. **Decouples CI from the rollout chain.** ArgoCD reconciles purely on the manifest in git. No coupling between the CI pipeline's success and the model rollout. A successful autoresearch PR can roll the deployment even if the post-merge CI fails to bump the SHA.
+
+### 14.2 In-cluster autoresearch with Workload Identity
+
+The autoresearch loop runs as a Kubernetes Job inside the cluster (`jobs/autoresearch-job.yaml`), not from a laptop. The Job's ServiceAccount (`autoresearch-sa`) binds to a GCP service account via Workload Identity, granting:
+
+- `secretmanager.secretAccessor` on the GitHub App PEM secret
+- `storage.objectAdmin` on the DVC remote bucket
+- `aiplatform.user` for any future Vertex AI calls (currently unused)
+
+**Why this matters.** No long-lived credentials live on a developer laptop. The Anthropic API key is in a K8s Secret in the `inference` namespace. The GitHub App PEM never touches disk — it's fetched from Secret Manager at job start. A production run survives the dev machine being asleep.
+
+### 14.3 Run-id linking, not "latest run" search
+
+`train.py` writes `models/run_id.txt` after `mlflow.start_run()`. `evaluate.py` reads that file and logs metrics into the *exact* run train.py created. There's no "find the most recent run" search.
+
+**Why this matters under autoresearch.** When the loop is running, multiple pipeline runs can complete in close succession. A "search for latest" pattern can attribute evaluation metrics to the wrong run. The run-id link makes the train→evaluate→register sequence ironclad.
 
 ---
 
@@ -1080,7 +1099,7 @@ make cluster-wake     # Scale back up. Same IPs. ~3 min.
 |---------|-----|
 | Prediction API | `http://34.47.242.89/predict` |
 | MLflow UI | `http://34.180.20.197:5000` (click "Model training" tab, not "GenAI") |
-| ArgoCD UI | `http://34.100.246.237` (admin / Y6p9-krPfkEhm4Sd) |
+| ArgoCD UI | `http://34.100.246.237` (admin / `TMwwd4OpkcL6fPRy`) |
 | KFP UI | `http://34.93.2.209` |
 
 ### Test the prediction API
@@ -1108,3 +1127,202 @@ make auto-experiment          # run 20 experiments locally
 make kfp-run                  # submit compiled pipeline to KFP
 make test                     # run 10 pytest tests
 ```
+
+---
+
+## 16. Pitching & Industry Positioning
+
+This section is for *you* (the owner) — how to talk about this project so it lands.
+
+### 16.1 What this project actually is
+
+Strip away the buzzwords and one sentence captures it:
+
+> An LLM is a contributor to this codebase. It proposes diffs. The cluster runs them. Only the winners ship.
+
+That framing — *Claude as a teammate, not a tool* — is the hook. Everything else (KFP, MLflow, ArgoCD, GitHub App, signed PRs) is the *infrastructure* that makes it production-safe.
+
+### 16.2 Don't pitch as
+
+- "I built a churn predictor." → Generic, model is intentionally simple.
+- "I built MLOps infrastructure." → Commodity in 2026, every platform engineer claims this.
+- "I built a learning project." → Apologetic; undercuts everything that follows.
+- "I built an autoML tool." → Wrong category. AutoML is hyperparameter search. This is *agentic engineering*.
+
+### 16.3 Do pitch as
+
+**Agentic AI engineering.** The system is in the same category as Cursor, Claude Code, Devin, Cognition's agent-driven coding tools, and the rapidly emerging "AI as a teammate" pattern. The differentiator: most agentic coding tools edit code on a developer's laptop. This one edits code, *trains the result on Kubernetes*, and ships only the winners to a live serving deployment — with a signed-PR audit trail.
+
+**LLMOps + GitOps fusion.** Two production patterns most platforms keep separate:
+- *LLMOps* = operating LLMs as runtime components (this project: Claude is a runtime decision-maker).
+- *GitOps* = declarative infrastructure where git is the source of truth (this project: ArgoCD reconciles annotations).
+
+Each is in demand alone. The intersection is rare.
+
+**Compound AI system** (Berkeley AI Research's term for multi-component AI systems). Five participants — Claude, KFP, MLflow, GitHub, ArgoCD — none coordinating directly, each doing one thing. Reconciliation through git, not through a central orchestrator. Read [BAIR's Compound AI Systems](https://bair.berkeley.edu/blog/2024/02/18/compound-ai-systems/) post; this project is one.
+
+### 16.4 2026 industry trends to lean into
+
+| Trend | This project's angle |
+|---|---|
+| **Agentic AI / AI agents** | Claude proposes structured diffs via tool-use; cluster executes; loop continues |
+| **AI as a teammate** (Cursor/Claude Code/Devin influence) | Each successful iter is a signed PR — Claude is a member of the dev team |
+| **LLMOps** (operating LLMs in production) | Token costs logged per iter, model-version observability via `/predict` |
+| **GitOps** (declarative infra, ArgoCD/FluxCD) | The only way prod state changes is by merging a PR |
+| **Compound AI systems** | Five components, decoupled, audit trail |
+| **Tool-use / structured outputs** | Anthropic `tool_use` with strict JSON schema, no parsing fragility |
+| **AutoML evolution** | Not random search over hyperparameters; LLM uses code reading + history to propose informed mutations |
+
+### 16.5 Three pitch templates
+
+**LinkedIn / portfolio one-liner (2-3 sentences):**
+
+> Built an autonomous AI engineer that improves ML models and ships them to production end-to-end. Claude proposes a code change via tool-use → KFP trains on Kubernetes → if AUC beats champion by ≥ threshold, a signed PR opens → CI validates → auto-merge → ArgoCD rolls inference pods. Zero human in the loop; every model live in prod is traceable to a merged PR with the LLM's reasoning.
+
+**Interview answer ("walk me through a recent project"):**
+
+> I wanted to see what happens when you let an LLM be a contributor to a codebase, not just an autocomplete. So I built a system where Claude proposes diffs to a binary-classification ML pipeline. The diffs train on a Kubeflow Pipeline in a real GKE cluster, get evaluated against the current `@champion` in MLflow, and if they win by a threshold, a GitHub App opens a PR via the GraphQL `createCommitOnBranch` API with auto-merge enabled. Once CI passes, the PR squash-merges to main. ArgoCD picks up the manifest change, rolls the deployment, and new pods load the new champion. The interesting parts aren't the model — the model is intentionally trivial. The interesting parts are the agentic loop, the per-iter PR audit trail, and the GitOps reconciliation chain that makes the whole thing safe.
+
+**Cover letter / Twitter ("why should I care"):**
+
+> What if the AI is a teammate, not a tool? An LLM proposes diffs to my ML codebase. The cluster runs them. Only the winners ship. My model improved 30× while I slept — and every change is a signed PR I can read in the morning.
+
+### 16.6 Role-specific framing
+
+- **MLOps Engineer / ML Platform Engineer.** Lead with: GKE Autopilot, Kubeflow Pipelines, MLflow registry with `@champion`/`@challenger` aliases, ArgoCD GitOps reconciliation, multi-arch ghcr.io image, Workload Identity, signed CI commits via GitHub App.
+- **LLMOps / AI Engineer.** Lead with: Anthropic tool-use schema, per-iter token logging to MLflow, cost-per-improvement tracking, autonomous loop with early-stop, structured-output reliability under long context.
+- **Data Engineer.** Lead with: schema-in-params plug-and-play (any binary-classification CSV), DVC + GCS data versioning, parquet-aware preprocessing, KFP DAG with metadata lineage.
+- **Senior / Staff role.** Lead with: the *decision* to use annotation-driven rollout instead of image-tag-only, the *decision* to use a per-iter PR pattern instead of direct push, the *decision* to use Workload Identity instead of mounted secrets. These are the trade-offs senior engineers want to hear about.
+
+### 16.7 Things to *say*, not just have
+
+A portfolio piece is a conversation starter. The conversation goes well when you have the *one-line takeaway* per concept ready:
+
+| Concept | Your one-liner |
+|---|---|
+| Why annotation, not image SHA | "I want the audit trail in `git log`, not in MLflow's UI." |
+| Why a GitHub App, not a PAT | "Signed commits + revocable install token + per-repo scope. PATs are a 2018 pattern." |
+| Why ArgoCD, not Helm + kubectl apply | "I want git to be the single source of truth for what's running. Helm is a templating language; it doesn't reconcile." |
+| Why MLflow `@champion` alias, not stages | "Aliases are pointers — moveable, atomic. Stages were renamed-and-deprecated in MLflow 3." |
+| Why DVC and KFP both exist | "DVC for local fast-iteration; KFP for Kubernetes-native training. Same DAG, different runners." |
+| Why CloudSQL, not SQLite-on-PVC | "PVCs are zone-locked on Autopilot; CloudSQL survives node moves. Lost the registry twice on SQLite before swapping." |
+
+If someone asks "why X?", you answer in one sentence. That's the difference between *built it* and *understand it*.
+
+---
+
+## 17. Demo Recording Plan
+
+A 3-4 minute recorded walkthrough is the single highest-leverage artifact this project produces. A recruiter clicks the GitHub repo, sees the README, and may or may not stay; a *video* converts a skim into a watch. This section is the recording playbook.
+
+### 17.1 The 3-4 minute narrative arc
+
+**Length budget: 210 seconds total. Anything longer loses recruiter attention; anything shorter doesn't earn trust.**
+
+| Beat | Time | What's on screen | Voiceover idea |
+|---|---|---|---|
+| **1. Hook** | 0–15s | The final AUC trajectory plot (will exist after the 20-iter run lands). Caption: "Claude moved AUC 0.749 → 0.93 in 30 minutes, autonomously." | "What happens when you let an LLM ship code to production?" |
+| **2. Before** | 15–45s | Terminal: `curl /health` → `{"model_version": "1"}`. Side panel: MLflow registry showing only v1, AUC 0.749. | "Vanilla decision tree. Two features. Recall under 9%. The starting line." |
+| **3. Live kick-off** | 45s–1:30 | Terminal: `make autoresearch-run AUTORESEARCH_N=20`. Side panel: KFP UI showing the first pipeline run going green. Side panel: GitHub PRs tab showing the first PR open. | "One command. Claude proposes a diff via tool-use. KFP trains it. MLflow checks if it beat the champion. If yes — GitHub App opens a signed PR. Auto-merge. ArgoCD picks it up. New pods load the new model." |
+| **4. Time-lapse** | 1:30–2:30 | Multi-pane, sped up 4–8×. Pane 1 (left, big): autoresearch logs streaming. Pane 2 (top-right): MLflow registry, versions appearing. Pane 3 (bottom-right): GitHub PRs page, merged trail growing. Caption per kept iter with AUC delta. | "Each iter is a hypothesis. Each merged PR is an experiment that won. Each rolled deployment is the model getting better." |
+| **5. The audit** | 2:30–3:00 | Switch to GitHub PRs (state=closed). Click into one PR. Show the diff Claude wrote. Show the signed-commit checkmark. Show the auto-merge timestamp. | "This isn't just a script. Every change is a signed PR with the LLM's reasoning. I can read every decision the system made overnight." |
+| **6. Wrap** | 3:00–3:30 | Final trajectory plot. Caption: "AUC 0.749 → 0.93. 20 iters. ~$2.50 in tokens. No human in the loop." | "The AI is a teammate. The cluster is the environment. Git is the source of truth." |
+
+### 17.2 Tab / window layout
+
+Open these in advance and arrange them so each one is a single command/keystroke away:
+
+**Browser (Chrome with one window, multiple tabs):**
+1. `http://34.180.20.197:5000` — MLflow UI, click "Models" → `classifier`
+2. `http://34.93.2.209` — KFP UI, click "Runs"
+3. `http://34.100.246.237` — ArgoCD UI, log in, open `inference-api` app
+4. `https://github.com/my-neme-eh-jeff/ML-deployment-system-for-autoresearch/pulls?state=closed` — merged PR trail
+5. `https://github.com/my-neme-eh-jeff/ML-deployment-system-for-autoresearch/actions` — CI runs (only show on the audit beat, briefly)
+
+**Terminal (one big window):**
+- Pre-stage: `make autoresearch-logs` ready in clipboard
+- Pre-stage: a loop that polls `/health` and prints the model_version field, e.g.:
+  ```bash
+  while true; do
+    curl -s http://34.47.242.89/health | jq -r '"\(now | strftime("%H:%M:%S")) — model_version=\(.model_version)"'
+    sleep 5
+  done
+  ```
+
+**Code editor (optional, only for the "what Claude wrote" close-up in beat 5):**
+- Open one merged PR in your editor's diff view, or use GitHub's web diff.
+
+### 17.3 Tooling — pick one of three
+
+**Option A: Sequential recordings + iMovie composite (recommended).**
+- Record each window/source separately with QuickTime (`Cmd + Shift + 5` → Record Selected Portion).
+- Each recording: 60–90s, focused on one element.
+- Composite in iMovie (free) or DaVinci Resolve (free): main source full-screen, secondary source as picture-in-picture. Speed up the time-lapse parts 4–8×. Voiceover separately.
+- **Why this is the recommended path:** Each clip is independent; if you flub one, you re-record only that clip. No live coordination overhead.
+
+**Option B: OBS Studio (free, multi-source live composite).**
+- `brew install --cask obs`. Set up scenes with multiple sources (Display Capture for screen, Window Capture for specific browser tabs).
+- Record once, all panes simultaneously, get a finished composite out.
+- **Why you'd pick this:** Less editing. **Why you might not:** First-time setup is ~30 min; you have one shot per take.
+
+**Option C: ScreenFlow ($169 Mac).**
+- Records each source as a separate track simultaneously, then you compose in its timeline editor. Best of both worlds. Worth it only if you'll do this often.
+
+### 17.4 Pre-flight checklist
+
+Run all of these *before* hitting record. T-15 minutes:
+
+```bash
+# Cluster + state
+make cluster-wake               # if cluster is asleep
+make gke-status                 # all pods Running
+make mlflow-kill && make mlflow # port-forward in a side terminal
+make reset-for-fresh-run        # clean v1 baseline (vanilla DT)
+curl http://34.47.242.89/health # confirm: model_version: "1"
+
+# Git + GitHub
+gh pr list --state open         # should be empty (no stale auto-PRs)
+gh run list --limit 3           # no in-flight CI on main
+
+# Anthropic
+kubectl get secret anthropic -n inference  # exists; if not: make autoresearch-secret
+
+# Browser tabs (open all 5 from §17.2)
+# Terminal panes (logs ready, /health-poll loop ready)
+# Voice: water nearby, do one rehearsal pass
+```
+
+### 17.5 During-recording principles
+
+- **Lead with the outcome.** The trajectory plot is the most powerful single image. Open with it, return to it at the end.
+- **Show the audit trail.** The merged PRs are the part that lands "this isn't just a script." Spend 30s on this beat.
+- **Speed up wait time honestly.** Time-lapse with a visible timestamp overlay, e.g. "+12:34 elapsed". Don't fake it; viewers can tell.
+- **Don't read the README.** Viewers can read. Voiceover should add context the screen doesn't.
+- **Don't show error states.** If an iter fails during the take, cut around it in post. The narrative is "the system works"; failures muddy that.
+- **One sentence per beat.** Resist the urge to over-explain. The architecture diagram in the README does the deep explaining.
+
+### 17.6 Post-production
+
+- **Speed**: 4× the time-lapse beat (4) — viewers see ~15 minutes of cluster activity in ~60 seconds.
+- **Captions**: one caption per beat, large font, contrasting color. AUC deltas in the time-lapse.
+- **Audio**: voiceover recorded *separately* in a quiet room, layered in iMovie. Live narration always sounds nervous and breathy.
+- **Outro**: a still frame of the final trajectory + GitHub repo URL + "Read more in the README" call-to-action.
+
+### 17.7 The 20-second teaser GIF (for README + LinkedIn)
+
+A standalone 20-second GIF, embedded at the very top of the README, beats any prose intro:
+
+- 0–5s: Trajectory plot drawing the AUC climb.
+- 5–10s: GitHub PRs page filling up with merged PRs (sped up 8×).
+- 10–15s: ArgoCD app showing rolling restart events.
+- 15–20s: Final number — "AUC 0.749 → 0.93, no human in the loop."
+
+Export from iMovie/DaVinci as MP4 → convert to GIF via `gifski` or `ffmpeg`. Keep file size under 5 MB so GitHub renders it inline.
+
+### 17.8 What to do *if* something fails on screen
+
+The autoresearch loop is robust to single-iter failures (timeouts, Claude errors, sub-threshold reverts) — it logs them to history.tsv and continues. **Don't react on camera.** Let the next iter succeed; the time-lapse smooths over the bumps.
+
+The only thing worth pausing recording for: the *cluster* itself going unresponsive (CloudSQL connection drop, ArgoCD reconcile stall > 5 min, KFP scheduler error). If that happens, stop, fix off-camera, restart the take.
+
+---
