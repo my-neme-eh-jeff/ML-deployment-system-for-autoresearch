@@ -5,12 +5,13 @@ set -e
 VENV_BIN=/app/.venv/bin
 cd /app
 
-# Refresh live state from origin/main BEFORE the loop reads it. The image bakes
-# in whatever was on main when CI built it; state-only commits (like a fresh
-# `make reset-for-fresh-run` push using [skip ci]) don't trigger a rebuild, so
-# the image can be stale by hours or days. These four files are what
-# auto_loop.py and Claude both read each iter; refreshing them prevents the
-# loop from chasing the previous run's history.
+# Refresh live state from origin/main BEFORE the loop reads it.
+#
+# The image bakes in whatever was on main when CI built it. State-only commits
+# (like a fresh `make reset-for-fresh-run` push using [skip ci]) don't trigger
+# a rebuild, so the image can be stale by hours or days. These four files are
+# what auto_loop.py and Claude both read each iter; refreshing them prevents
+# the loop from chasing the previous run's history.
 echo "[run-autoresearch] refreshing live state from origin/main..."
 "$VENV_BIN/python" - <<'PYEOF'
 import urllib.request, urllib.error, os
