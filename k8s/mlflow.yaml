@@ -83,10 +83,17 @@ spec:
           resources:
             requests:
               cpu: 200m
-              memory: 512Mi
+              # `--serve-artifacts` proxies the entire model pickle through
+              # uvicorn during `mlflow.sklearn.log_model`. A RandomForest on
+              # 200K × ~330 features pickles to 1–1.5 GiB; staging it inside
+              # the proxy hits the 2 GiB limit and the pod OOMKills mid-upload
+              # — which silently hangs the training container's HTTP call and
+              # eventually fails the KFP run. 4 GiB gives the proxy room for
+              # the model bytes + Python runtime + concurrent requests.
+              memory: 1Gi
             limits:
-              cpu: "1"
-              memory: 2Gi
+              cpu: "2"
+              memory: 4Gi
 ---
 apiVersion: v1
 kind: Service
