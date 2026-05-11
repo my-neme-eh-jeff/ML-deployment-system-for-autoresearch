@@ -5,6 +5,9 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "validate:smoke":   "webreel validate -c configs/smoke.config.json",
+    "preview:smoke":    "webreel preview -c configs/smoke.config.json",
+    "record:smoke":     "webreel record -c configs/smoke.config.json",
     "validate:mlflow":  "webreel validate -c configs/mlflow.config.json",
     "validate:kfp":     "webreel validate -c configs/kfp.config.json",
     "validate:argocd":  "webreel validate -c configs/argocd.config.json",

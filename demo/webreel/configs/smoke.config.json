@@ -1,0 +1,24 @@
+{
+  "$schema": "https://webreel.dev/schema/v1.json",
+  "outDir": "../../captures/raw",
+  "viewport": { "width": 1280, "height": 720 },
+  "defaultDelay": 300,
+  "videos": {
+    "smoke": {
+      "url": "../smoke/index.html",
+      "fps": 30,
+      "quality": 70,
+      "output": "00-smoke.mp4",
+      "waitFor": "#cta",
+      "steps": [
+        { "action": "pause", "ms": 800, "label": "smoke test — entire toolchain" },
+        { "action": "hover", "selector": "#cta", "delay": 600 },
+        { "action": "click", "selector": "#cta", "label": "click", "delay": 1200 },
+        { "action": "wait", "text": "promoted", "timeout": 5000 },
+        { "action": "pause", "ms": 800, "label": "state changed ✓" },
+        { "action": "scroll", "y": 200, "delay": 600 },
+        { "action": "pause", "ms": 600 }
+      ]
+    }
+  }
+}

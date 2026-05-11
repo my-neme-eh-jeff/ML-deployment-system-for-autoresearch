@@ -1,0 +1,32 @@
+{
+  "$schema": "https://webreel.dev/schema/v1.json",
+  "outDir": "../../captures/raw",
+  "viewport": "desktop",
+  "defaultDelay": 400,
+  "clickDwell": 140,
+  "videos": {
+    "mlflow-trajectory": {
+      "url": "${MLFLOW_URL}/#/experiments/0",
+      "fps": 60,
+      "quality": 85,
+      "output": "01-mlflow.mp4",
+      "waitFor": { "text": "Experiments" },
+      "steps": [
+        { "action": "pause", "ms": 1800, "label": "MLflow • all 20 autoresearch runs", "description": "Settle on the runs list — 20 iters with AUC + params + tags visible." },
+        { "action": "scroll", "y": 200, "delay": 800, "description": "Show that more runs exist below the fold." },
+        { "action": "scroll", "y": -200, "delay": 600, "description": "Scroll back to the top so the table header is visible." },
+        { "action": "hover", "text": "auc_roc", "delay": 700, "label": "sort by AUC", "description": "Hover the AUC column header before clicking sort." },
+        { "action": "click", "text": "auc_roc", "delay": 1200, "description": "Sort runs by AUC descending — best at top." },
+        { "action": "pause", "ms": 1400, "label": "best run at top", "description": "Best run is the current @champion candidate." },
+        { "action": "click", "text": "Chart", "delay": 1500, "label": "Chart view", "description": "Switch to the chart/parallel-coordinates view to show the AUC trajectory across iters." },
+        { "action": "pause", "ms": 2200, "label": "AUC trajectory across 20 iters" },
+        { "action": "click", "text": "Table", "delay": 1200, "description": "Back to the table." },
+        { "action": "click", "selector": "table tbody tr:nth-of-type(1) a", "delay": 1500, "label": "open winning run", "description": "Click into the top run to show parameters + metrics + the registered model version." },
+        { "action": "wait", "text": "Parameters", "timeout": 8000 },
+        { "action": "pause", "ms": 1400, "label": "Parameters + Metrics" },
+        { "action": "scroll", "y": 400, "delay": 800 },
+        { "action": "pause", "ms": 1200, "label": "Registered model: classifier vN @champion" }
+      ]
+    }
+  }
+}

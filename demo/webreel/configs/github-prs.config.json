@@ -1,0 +1,28 @@
+{
+  "$schema": "https://webreel.dev/schema/v1.json",
+  "outDir": "../../captures/raw",
+  "viewport": "desktop",
+  "defaultDelay": 400,
+  "clickDwell": 140,
+  "videos": {
+    "github-prs": {
+      "url": "https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/pulls?q=is%3Apr+is%3Amerged+autoresearch",
+      "fps": 60,
+      "quality": 85,
+      "output": "04-github.mp4",
+      "waitFor": { "text": "Pull requests" },
+      "steps": [
+        { "action": "pause", "ms": 1800, "label": "GitHub • merged autoresearch PRs", "description": "Each PR is one improvement Claude proposed that beat @champion." },
+        { "action": "scroll", "y": 400, "delay": 1000, "description": "Show that there are many PRs — N iterations, N-K winners." },
+        { "action": "scroll", "y": -400, "delay": 800, "description": "Back to the top of the list." },
+        { "action": "click", "selector": "div[aria-label='Issues'] a[id^='issue_']", "delay": 1800, "label": "open winning PR", "description": "Open the most recent merged PR — Claude's diff to params.yaml + a one-liner rationale in the body." },
+        { "action": "wait", "text": "Files changed", "timeout": 10000 },
+        { "action": "pause", "ms": 1600, "label": "PR body: Claude's rationale" },
+        { "action": "click", "text": "Files changed", "delay": 1800, "label": "the diff", "description": "Show the actual params.yaml diff — usually one or two lines (model_type, max_depth, etc)." },
+        { "action": "pause", "ms": 2800, "label": "params.yaml diff" },
+        { "action": "scroll", "y": 200, "delay": 600 },
+        { "action": "pause", "ms": 1400, "label": "Verified commit • GitHub App signed", "description": "The green 'Verified' badge — these commits are signed by the GitHub App, not a PAT." }
+      ]
+    }
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "$schema": "https://webreel.dev/schema/v1.json",
+  "outDir": "../../captures/raw",
+  "viewport": "desktop",
+  "defaultDelay": 400,
+  "clickDwell": 140,
+  "videos": {
+    "argocd-synced": {
+      "url": "${ARGOCD_URL}",
+      "fps": 60,
+      "quality": 85,
+      "output": "03-argocd.mp4",
+      "waitFor": { "text": "Argo CD" },
+      "steps": [
+        { "action": "pause", "ms": 1500, "label": "ArgoCD • login", "description": "NOTE: ArgoCD requires auth. webreel can't preserve session state, so we either (a) skip the login click and start the recording on an already-logged-in tab via `webreel preview` to set up state then `record` immediately (fragile), or (b) record login + use `username: admin` / a TEST password (rotate after demo)." },
+        { "action": "type", "text": "admin", "selector": "input[name='username']", "charDelay": 80, "delay": 600, "label": "username: admin" },
+        { "action": "type", "text": "${ARGOCD_PASSWORD}", "selector": "input[name='password']", "charDelay": 30, "delay": 600, "label": "password: ••••••••" },
+        { "action": "click", "text": "Sign In", "delay": 1800 },
+        { "action": "wait", "text": "inference-api", "timeout": 12000 },
+        { "action": "pause", "ms": 1600, "label": "inference-api • Synced • Healthy", "description": "The whole point: ArgoCD has reconciled the annotation bump and the live cluster matches git." },
+        { "action": "click", "text": "inference-api", "delay": 1800, "label": "open app", "description": "Show the resource tree — Deployment → ReplicaSet → 2 Pods, all Synced." },
+        { "action": "pause", "ms": 2200 },
+        { "action": "scroll", "y": 200, "delay": 800 },
+        { "action": "pause", "ms": 1400, "label": "Sync history: every autoresearch promotion is here" }
+      ]
+    }
+  }
+}
