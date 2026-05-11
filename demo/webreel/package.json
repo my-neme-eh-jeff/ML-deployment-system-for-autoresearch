@@ -1,0 +1,26 @@
+{
+  "name": "autoresearch-webreel-demo",
+  "version": "0.1.0",
+  "description": "WebReel configs for recording the autoresearch demo (MLflow, KFP, ArgoCD, GitHub PRs).",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "validate:mlflow":  "webreel validate -c configs/mlflow.config.json",
+    "validate:kfp":     "webreel validate -c configs/kfp.config.json",
+    "validate:argocd":  "webreel validate -c configs/argocd.config.json",
+    "validate:github":  "webreel validate -c configs/github-prs.config.json",
+    "validate:all":     "npm run validate:mlflow && npm run validate:kfp && npm run validate:argocd && npm run validate:github",
+    "preview:mlflow":   "webreel preview -c configs/mlflow.config.json",
+    "preview:kfp":      "webreel preview -c configs/kfp.config.json",
+    "preview:argocd":   "webreel preview -c configs/argocd.config.json",
+    "preview:github":   "webreel preview -c configs/github-prs.config.json",
+    "record:mlflow":    "webreel record -c configs/mlflow.config.json",
+    "record:kfp":       "webreel record -c configs/kfp.config.json",
+    "record:argocd":    "webreel record -c configs/argocd.config.json",
+    "record:github":    "webreel record -c configs/github-prs.config.json",
+    "record:all":       "npm run record:mlflow && npm run record:kfp && npm run record:argocd && npm run record:github"
+  },
+  "dependencies": {
+    "webreel": "^0.1.4"
+  }
+}

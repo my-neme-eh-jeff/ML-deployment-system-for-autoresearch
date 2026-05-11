@@ -256,7 +256,6 @@ The one-line `sed` in CI that swaps the image tag does the same thing as `helm u
 | **ArgoCD** | Reconciles cluster to git. Push = deploy. |
 | **GitHub Actions** | Lint, test, build images. Path-filtered so docs don't trigger image rebuilds. |
 | **GitHub App + GraphQL** | Autoresearch commits are signed and verified. No PAT. |
-| **GKE Autopilot** | No node management. Stable LoadBalancer IPs. |
 | **CloudSQL** | Survives pod restarts. SQLite-on-PVC didn't; the registry got wiped twice before I swapped backends. |
 | **uv + ruff** | Fast Python tooling. |
 

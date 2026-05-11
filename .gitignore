@@ -3,6 +3,9 @@ __pycache__/
 *.pyc
 .venv/
 
+# Node (demo/webreel uses npm tooling — never commit installed deps)
+node_modules/
+
 # Models
 models/
 
