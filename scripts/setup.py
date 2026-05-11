@@ -28,11 +28,16 @@ from pathlib import Path
 
 try:
     import questionary
+    from pyfiglet import Figlet
     from questionary import Choice, Style
-except ImportError:
+    from rich.align import Align
+    from rich.console import Console
+    from rich.panel import Panel
+    from rich.table import Table
+    from rich.text import Text
+except ImportError as e:
     print(
-        "ERROR: `questionary` is not installed.\n"
-        "Run `uv sync` first (it's a project dependency).",
+        f"ERROR: {e}\nRun `uv sync` first to install setup wizard dependencies.",
         file=sys.stderr,
     )
     sys.exit(1)
@@ -42,32 +47,61 @@ PROJECT_ROOT = Path(__file__).parent.parent
 ENV_FILE = PROJECT_ROOT / ".env"
 TENANT_CONFIG = PROJECT_ROOT / "configs" / "tenant.yaml"
 
-ACCENT = Style(
+# Single accent color used by both the rich panels and questionary prompts.
+# Picked to feel like Vercel / Bun / modern CLI tooling — warm orange.
+ACCENT = "#ff9d00"
+SUCCESS = "#44ff44"
+DIM = "#858585"
+
+console = Console()
+
+QSTYLE = Style(
     [
-        ("qmark", "fg:#ff9d00 bold"),
+        ("qmark", f"fg:{ACCENT} bold"),
         ("question", "bold"),
-        ("answer", "fg:#44ff44 bold"),
-        ("pointer", "fg:#ff9d00 bold"),
-        ("highlighted", "fg:#ff9d00 bold"),
-        ("selected", "fg:#44ff44"),
-        ("disabled", "fg:#858585 italic"),
+        ("answer", f"fg:{SUCCESS} bold"),
+        ("pointer", f"fg:{ACCENT} bold"),
+        ("highlighted", f"fg:{ACCENT} bold"),
+        ("selected", f"fg:{SUCCESS}"),
+        ("disabled", f"fg:{DIM} italic"),
     ]
 )
 
 
 def banner() -> None:
-    """Print the wizard banner. Cosmetic; sets the tone like Vercel's setup."""
-    line = "─" * 64
-    print()
-    print(line)
-    print(" ML Deployment System for Autoresearch — setup wizard")
-    print(line)
-    print(
-        " This wizard configures the project for your cloud + ML tracker,\n"
-        " writes a .env, and prints the next steps. ~2 minutes."
+    """Render the wizard banner with a figlet logo + rich panel.
+
+    Modeled after the Vercel / Bun / Wrangler CLI feel — slant ASCII logo on
+    top, project name and one-line description underneath, all in a bordered
+    panel with the accent color.
+    """
+    logo_lines = Figlet(font="slant").renderText("Autoresearch").rstrip()
+
+    body = Text()
+    body.append(logo_lines, style=f"bold {ACCENT}")
+    body.append("\n\n")
+    body.append("ML Deployment System ", style="bold white")
+    body.append("·", style=DIM)
+    body.append(" Setup Wizard", style=DIM)
+    body.append("\n\n")
+    body.append(
+        "Configure your cloud + tracker, drop in your creds, ship to prod.",
+        style=DIM,
     )
-    print(line)
-    print()
+
+    console.print()
+    console.print(
+        Panel(
+            Align.left(body),
+            border_style=ACCENT,
+            padding=(1, 3),
+            title=f"[{ACCENT}]▸[/{ACCENT}] [bold]autoresearch[/bold]",
+            title_align="left",
+            subtitle=f"[{DIM}]~2 minutes • idempotent • non-destructive[/{DIM}]",
+            subtitle_align="right",
+        )
+    )
+    console.print()
 
 
 def _read_existing_env() -> dict[str, str]:
@@ -112,7 +146,7 @@ def _cloud_choice() -> str:
                 disabled="coming soon — only GKE is wired up today",
             ),
         ],
-        style=ACCENT,
+        style=QSTYLE,
         instruction="(↑/↓ to move, Enter to pick)",
     ).unsafe_ask()
 
@@ -128,7 +162,7 @@ def _tracker_choice() -> str:
                 disabled="coming soon — only MLflow is wired up today",
             ),
         ],
-        style=ACCENT,
+        style=QSTYLE,
     ).unsafe_ask()
 
 
@@ -140,7 +174,7 @@ def _gcp_settings(existing: dict[str, str]) -> tuple[str, str]:
             validate=lambda v: (
                 True if v.strip() else "Project ID is required (e.g. my-project-12345)."
             ),
-            style=ACCENT,
+            style=QSTYLE,
         )
         .unsafe_ask()
         .strip()
@@ -150,7 +184,7 @@ def _gcp_settings(existing: dict[str, str]) -> tuple[str, str]:
         questionary.text(
             "GCP region:",
             default=existing.get("GCP_REGION", "asia-south1"),
-            style=ACCENT,
+            style=QSTYLE,
         )
         .unsafe_ask()
         .strip()
@@ -164,7 +198,7 @@ def _anthropic_key(existing: dict[str, str]) -> str:
         keep = questionary.confirm(
             "ANTHROPIC_API_KEY already set in .env. Keep it?",
             default=True,
-            style=ACCENT,
+            style=QSTYLE,
         ).unsafe_ask()
         if keep:
             return existing["ANTHROPIC_API_KEY"]
@@ -177,7 +211,7 @@ def _anthropic_key(existing: dict[str, str]) -> str:
                 if v.strip().startswith("sk-ant-")
                 else "Expected key to start with 'sk-ant-'."
             ),
-            style=ACCENT,
+            style=QSTYLE,
         )
         .unsafe_ask()
         .strip()
@@ -190,7 +224,7 @@ def _github_app_config(existing: dict[str, str]) -> dict[str, str] | None:
         "  (Required so the loop can open signed per-iter PRs. Skip if you only\n"
         "  want to run the inference API + local training.)",
         default=True,
-        style=ACCENT,
+        style=QSTYLE,
     ).unsafe_ask()
     if not setup_gh:
         return None
@@ -199,35 +233,35 @@ def _github_app_config(existing: dict[str, str]) -> dict[str, str] | None:
         "GITHUB_APP_ID": questionary.text(
             "GitHub App ID (e.g. 3576508):",
             default=existing.get("GITHUB_APP_ID", ""),
-            style=ACCENT,
+            style=QSTYLE,
         )
         .unsafe_ask()
         .strip(),
         "GITHUB_INSTALLATION_ID": questionary.text(
             "GitHub App Installation ID:",
             default=existing.get("GITHUB_INSTALLATION_ID", ""),
-            style=ACCENT,
+            style=QSTYLE,
         )
         .unsafe_ask()
         .strip(),
         "GITHUB_OWNER": questionary.text(
             "GitHub owner (user or org):",
             default=existing.get("GITHUB_OWNER", ""),
-            style=ACCENT,
+            style=QSTYLE,
         )
         .unsafe_ask()
         .strip(),
         "GITHUB_REPO": questionary.text(
             "GitHub repo name:",
             default=existing.get("GITHUB_REPO", ""),
-            style=ACCENT,
+            style=QSTYLE,
         )
         .unsafe_ask()
         .strip(),
         "GITHUB_PEM_SECRET": questionary.text(
             "GCP Secret Manager secret name holding the GitHub App PEM:",
             default=existing.get("GITHUB_PEM_SECRET", "github-app-key"),
-            style=ACCENT,
+            style=QSTYLE,
         )
         .unsafe_ask()
         .strip(),
@@ -242,20 +276,36 @@ def _summarize(
     anthropic_set: bool,
     gh: dict[str, str] | None,
 ) -> None:
-    print("\n  Summary")
-    print("  ───────")
-    print(f"    Cloud:               {cloud}")
-    print(f"    Tracker:             {tracker}")
-    print(f"    GCP project:         {project}")
-    print(f"    GCP region:          {region}")
-    print(f"    Anthropic key set:   {'yes' if anthropic_set else 'no'}")
+    """Pretty summary table before writing files. Lets the user spot typos."""
+    table = Table(
+        show_header=False,
+        box=None,
+        padding=(0, 2),
+        title=f"[bold {ACCENT}]Review your choices[/bold {ACCENT}]",
+        title_justify="left",
+        title_style="",
+    )
+    table.add_column("Key", style=DIM, no_wrap=True)
+    table.add_column("Value")
+
+    table.add_row("Cloud", f"[bold]{cloud}[/bold]")
+    table.add_row("Tracker", f"[bold]{tracker}[/bold]")
+    table.add_row("GCP project", project)
+    table.add_row("GCP region", region)
+    table.add_row(
+        "Anthropic key",
+        f"[{SUCCESS}]✓ set[/{SUCCESS}]" if anthropic_set else "[red]✗ not set[/red]",
+    )
     if gh:
-        print(f"    GitHub App ID:       {gh['GITHUB_APP_ID']}")
-        print(f"    GitHub install ID:   {gh['GITHUB_INSTALLATION_ID']}")
-        print(f"    Repo:                {gh['GITHUB_OWNER']}/{gh['GITHUB_REPO']}")
+        table.add_row("GitHub App ID", gh["GITHUB_APP_ID"])
+        table.add_row("Installation ID", gh["GITHUB_INSTALLATION_ID"])
+        table.add_row("Repo", f"{gh['GITHUB_OWNER']}/{gh['GITHUB_REPO']}")
     else:
-        print("    GitHub App:          not configured")
-    print()
+        table.add_row("GitHub App", f"[{DIM}]skipped[/{DIM}]")
+
+    console.print()
+    console.print(table)
+    console.print()
 
 
 def _write_env(
@@ -276,7 +326,9 @@ def _write_env(
         lines.extend([f"{k}={v}" for k, v in gh.items()])
         lines.append("")
     ENV_FILE.write_text("\n".join(lines))
-    print(f"  ✓ wrote {ENV_FILE.relative_to(PROJECT_ROOT)}")
+    console.print(
+        f"  [{SUCCESS}]✓[/{SUCCESS}] wrote [bold]{ENV_FILE.relative_to(PROJECT_ROOT)}[/bold]"
+    )
 
 
 def _write_tenant_config(cloud: str, tracker: str, project: str, region: str) -> None:
@@ -295,57 +347,109 @@ def _write_tenant_config(cloud: str, tracker: str, project: str, region: str) ->
         f"  provider: {tracker}\n"
     )
     TENANT_CONFIG.write_text(content)
-    print(f"  ✓ wrote {TENANT_CONFIG.relative_to(PROJECT_ROOT)}")
+    console.print(
+        f"  [{SUCCESS}]✓[/{SUCCESS}] wrote [bold]{TENANT_CONFIG.relative_to(PROJECT_ROOT)}[/bold]"
+    )
 
 
 def _next_steps(cloud: str, gh: dict[str, str] | None) -> None:
-    print()
-    print("  Next steps")
-    print("  ──────────")
-    n = 1
-    print(f"   {n}. Authenticate gcloud + kubectl:")
-    print("        gcloud auth login")
-    print("        gcloud auth application-default login")
-    n += 1
-    print(f"   {n}. (One-time) Provision GCP resources:")
-    print("        bash scripts/setup-gcp.sh")
-    n += 1
-    print(f"   {n}. (One-time) Deploy MLflow + ArgoCD to your GKE cluster:")
-    print("        make deploy-mlflow")
-    print("        make deploy-argocd")
-    n += 1
+    """Print the post-setup runbook as a clean, numbered Panel."""
+    steps: list[tuple[str, list[str]]] = [
+        (
+            "Authenticate gcloud + kubectl",
+            ["gcloud auth login", "gcloud auth application-default login"],
+        ),
+        (
+            "Provision GCP resources [dim](one-time)[/dim]",
+            ["bash scripts/setup-gcp.sh"],
+        ),
+        (
+            "Deploy MLflow + ArgoCD to your GKE cluster [dim](one-time)[/dim]",
+            ["make deploy-mlflow", "make deploy-argocd"],
+        ),
+    ]
     if gh:
-        print(f"   {n}. Push the Anthropic key into the inference namespace:")
-        print("        make autoresearch-secret")
-        n += 1
-    print(f"   {n}. Wake the cluster (if asleep):")
-    print("        make cluster-wake")
-    n += 1
-    print(f"   {n}. Bootstrap a v1 baseline:")
-    print("        make mlflow-kill && make mlflow   # in another terminal")
-    print("        make reset-for-fresh-run")
-    n += 1
+        steps.append(
+            ("Push Anthropic key into the cluster", ["make autoresearch-secret"])
+        )
+    steps.extend(
+        [
+            ("Wake the cluster [dim](if asleep)[/dim]", ["make cluster-wake"]),
+            (
+                "Bootstrap a v1 baseline",
+                [
+                    "make mlflow-kill && make mlflow   # in another terminal",
+                    "make reset-for-fresh-run",
+                ],
+            ),
+        ]
+    )
     if gh:
-        print(f"   {n}. Fire the autoresearch loop:")
-        print("        make autoresearch-run AUTORESEARCH_N=20 AUTORESEARCH_HOURS=4.0")
-        print("        make autoresearch-logs")
-    print()
-    print("  Done — happy researching.\n")
+        steps.append(
+            (
+                "Fire the autoresearch loop",
+                [
+                    "make autoresearch-run AUTORESEARCH_N=20 AUTORESEARCH_HOURS=4.0",
+                    "make autoresearch-logs",
+                ],
+            )
+        )
+
+    lines: list[str] = []
+    for i, (title, cmds) in enumerate(steps, start=1):
+        lines.append(f"[bold {ACCENT}]{i:>2}.[/bold {ACCENT}] [bold]{title}[/bold]")
+        for cmd in cmds:
+            lines.append(f"    [{ACCENT}]▸[/{ACCENT}] [{DIM}]{cmd}[/{DIM}]")
+        lines.append("")
+
+    console.print()
+    console.print(
+        Panel(
+            Text.from_markup("\n".join(lines).rstrip()),
+            title=f"[{ACCENT}]▸[/{ACCENT}] [bold]Next steps[/bold]",
+            title_align="left",
+            border_style=ACCENT,
+            padding=(1, 3),
+        )
+    )
+    console.print(
+        f"\n  [{SUCCESS}]✓[/{SUCCESS}] [bold]Done — happy researching.[/bold]\n"
+    )
 
 
 def _prereqs_warning() -> None:
     """Soft-warn about missing CLIs. Doesn't block."""
-    missing = []
+    rows = []
     for cli in ("gcloud", "kubectl", "uv"):
-        if not _check_cli(cli):
-            missing.append(cli)
-    if missing:
-        print(
-            f"  ⚠  Missing CLIs on PATH: {', '.join(missing)}\n"
-            "     You can finish this wizard, but later steps will fail until\n"
-            "     these are installed. (gcloud: cloud.google.com/sdk;\n"
-            "     kubectl: bundled with gcloud; uv: pip install uv)\n"
+        present = _check_cli(cli)
+        rows.append((cli, present))
+
+    table = Table(show_header=False, box=None, padding=(0, 2))
+    table.add_column("Tool", style="bold", no_wrap=True)
+    table.add_column("Status")
+    for cli, present in rows:
+        if present:
+            table.add_row(cli, f"[{SUCCESS}]✓ installed[/{SUCCESS}]")
+        else:
+            table.add_row(cli, "[red]✗ not on PATH[/red]")
+    console.print(
+        Panel(
+            table,
+            title=f"[{ACCENT}]▸[/{ACCENT}] [bold]Prerequisites[/bold]",
+            title_align="left",
+            border_style=DIM,
+            padding=(0, 2),
         )
+    )
+    missing = [c for c, p in rows if not p]
+    if missing:
+        console.print(
+            f"\n  [yellow]⚠[/yellow]  Missing: [bold]{', '.join(missing)}[/bold]. "
+            f"You can finish this wizard, but later steps will fail without them."
+            f"\n     gcloud → cloud.google.com/sdk · kubectl → bundled with gcloud · uv → "
+            f"pip install uv\n"
+        )
+    console.print()
 
 
 def _from_env() -> bool:
@@ -404,7 +508,7 @@ def main() -> int:
     if not questionary.confirm(
         "Write .env + configs/tenant.yaml?",
         default=True,
-        style=ACCENT,
+        style=QSTYLE,
     ).unsafe_ask():
         print("  (cancelled — nothing written)")
         return 1

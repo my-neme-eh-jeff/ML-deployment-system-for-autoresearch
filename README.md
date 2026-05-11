@@ -195,6 +195,14 @@ The starting point is deliberately weak: vanilla decision tree on a 2-feature su
 
 ## 🏁 Spin it up
 
+First-time setup is a single interactive wizard — pick cloud, paste in creds, done:
+
+```bash
+make setup                                     # interactive: cloud + tracker + creds → .env
+```
+
+Then the four-command demo flow:
+
 ```bash
 make cluster-wake                              # bring up GKE + CloudSQL + KFP + ArgoCD
 make reset-for-fresh-run                       # baseline classifier@v1 (vanilla DT)
@@ -202,7 +210,7 @@ make autoresearch-run AUTORESEARCH_N=20        # let Claude iterate 20×
 make cluster-sleep                             # tear down to ~$0/day idle
 ```
 
-You'll need a GCP project, an Anthropic API key, and a GitHub App PEM in GCP Secret Manager. Setup commands live in `Makefile` — `make` lists them.
+You'll need a GCP project, an Anthropic API key, and a GitHub App PEM in GCP Secret Manager. The setup wizard prompts for all of these.
 
 For local dev:
 
