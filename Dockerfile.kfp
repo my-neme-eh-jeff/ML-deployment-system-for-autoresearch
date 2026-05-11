@@ -16,6 +16,13 @@ RUN pip install --no-cache-dir uv
 # between the training pod and the inference pod.
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev
+# KFP v2's launcher shells out to `python -m pip install kfp==<launcher_version>`
+# at component start, even when kfp is already in the venv. `uv sync` builds a
+# pip-less venv, so without ensurepip the launcher dies with
+# "No module named pip" and the whole pipeline reports FAILED — which is what
+# 5/5 iters hit in the last test run. Seed pip into the venv to satisfy the
+# launcher's install probe.
+RUN /app/.venv/bin/python -m ensurepip --upgrade
 
 # Bake the project source so the KFP @component wrappers can shell out to
 # src/preprocess.py / src/train.py / src/evaluate.py. The /app layout matches
