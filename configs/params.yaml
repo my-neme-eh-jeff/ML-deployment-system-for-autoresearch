@@ -2,22 +2,65 @@ dataset:
   csv_path: data/ieee_cis.parquet
   target_column: isFraud
   drop_columns: [TransactionID, TransactionDT]
-  numeric_features: [TransactionAmt]
-  categorical_features: [ProductCD]
+  numeric_features:
+    - TransactionAmt
+    - card1
+    - card2
+    - card3
+    - card5
+    - addr1
+    - addr2
+    - dist1
+    - dist2
+    - C1
+    - C2
+    - C3
+    - C4
+    - C5
+    - C6
+    - C7
+    - C8
+    - C9
+    - C10
+    - C11
+    - C12
+    - C13
+    - C14
+    - D1
+    - D2
+    - D3
+    - D4
+    - D5
+    - D6
+    - D7
+    - D8
+    - D9
+    - D10
+    - D11
+    - D12
+    - D13
+    - D14
+    - D15
+  categorical_features:
+    - ProductCD
+    - card4
+    - card6
+    - P_emaildomain
+    - R_emaildomain
 
 preprocess:
   test_size: 0.2
   random_state: 42
 
 train:
-  model_type: DecisionTreeClassifier
+  model_type: RandomForestClassifier
   random_state: 42
   max_depth: null
-  max_features: null
-  n_estimators: 100
+  max_features: sqrt
+  n_estimators: 200
   min_samples_split: 2
   min_samples_leaf: 1
-  class_weight: null
+  class_weight: balanced
   bootstrap: true
   learning_rate: 0.1
   subsample: 1.0
