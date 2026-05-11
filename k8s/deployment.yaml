@@ -21,8 +21,8 @@ spec:
       # MLflow at startup, so users see the latest model within the rollout
       # window without any image rebuild.
       annotations:
-        mlops/classifier-version: "3"
-        mlops/classifier-run-id: "2f4b67942b0e4516978f650411ad92da"
+        mlops/classifier-version: "4"
+        mlops/classifier-run-id: "04c4a304b7cb4c58a5cb841da1a35e14"
     spec:
       serviceAccountName: inference-api-sa
       containers:
