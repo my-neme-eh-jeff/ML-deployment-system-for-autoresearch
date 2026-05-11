@@ -225,11 +225,19 @@ deploymentSpec:
           \ exist_ok=True)\n    (workdir / \"configs\" / \"params.yaml\").write_text(params_yaml)\n\
           \n    (workdir / \"data\" / \"processed\").mkdir(parents=True, exist_ok=True)\n\
           \    shutil.copy(train_csv.path, workdir / \"data\" / \"processed\" / \"\
-          train.csv\")\n\n    env = {**os.environ, \"MLFLOW_TRACKING_URI\": mlflow_tracking_uri}\n\
+          train.csv\")\n\n    # Pass the KFP placeholder for run-id through to train.py\
+          \ via env so\n    # the MLflow run gets tagged with `kfp_run_id`. The autoresearch\
+          \ loop\n    # queries by this tag, sidestepping the race where the latest\
+          \ MLflow\n    # run isn't actually the one this KFP pipeline just produced.\n\
+          \    env = {\n        **os.environ,\n        \"MLFLOW_TRACKING_URI\": mlflow_tracking_uri,\n\
+          \        \"KFP_RUN_ID\": os.environ.get(\"KFP_RUN_ID\", \"\"),\n    }\n\
           \    subprocess.run([\"python\", \"-m\", \"src.train\"], cwd=str(workdir),\
           \ check=True, env=env)\n\n    shutil.copy(workdir / \"models\" / \"classifier.pkl\"\
           , model_artifact.path)\n    shutil.copy(workdir / \"models\" / \"run_id.txt\"\
           , run_id_artifact.path)\n\n"
+        env:
+        - name: KFP_RUN_ID
+          value: '{{$.pipeline_job_uuid}}'
         image: ghcr.io/my-neme-eh-jeff/pipeline-kfp:latest
         resources:
           cpuLimit: 2.0

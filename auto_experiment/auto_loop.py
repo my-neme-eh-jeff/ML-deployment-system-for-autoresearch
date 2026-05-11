@@ -5,6 +5,7 @@ import csv
 import json
 import os
 import random
+import re
 import subprocess
 import sys
 import time
@@ -496,11 +497,29 @@ def run_pipeline_kfp(timeout: int = 900) -> dict:
 
     try:
         mlflow.set_tracking_uri(os.environ["MLFLOW_TRACKING_URI"])
+        # Query by the kfp_run_id tag that train.py wrote — pinpoints THIS
+        # KFP execution's MLflow run, even if a concurrent training run
+        # (another autoresearch loop, manual `make repro`, CI build, retry)
+        # landed in the same experiment moments later.
         runs = mlflow.search_runs(
             experiment_names=["training"],
+            filter_string=f"tags.kfp_run_id = '{run.run_id}'",
             order_by=["start_time DESC"],
             max_results=1,
         )
+        if runs.empty:
+            # Fallback: very old training images may not set the tag (or KFP
+            # didn't substitute the placeholder for some reason). Fall back
+            # to latest-run-in-experiment with a loud warning so we notice.
+            print(
+                "  WARN: no MLflow run with tag kfp_run_id="
+                f"'{run.run_id}' — falling back to latest run (race-prone)."
+            )
+            runs = mlflow.search_runs(
+                experiment_names=["training"],
+                order_by=["start_time DESC"],
+                max_results=1,
+            )
         if runs.empty:
             return {
                 "success": False,
@@ -573,6 +592,38 @@ def _read_champion_version(mlflow_run_id: str) -> tuple[str, str]:
     return str(champ.version), str(champ.run_id)
 
 
+def _get_champion_version() -> str | None:
+    """Return the version-string of the current @champion, or None if unset."""
+    try:
+        mlflow.set_tracking_uri(os.environ["MLFLOW_TRACKING_URI"])
+        client = mlflow.MlflowClient()
+        v = client.get_model_version_by_alias("classifier", "champion")
+        return str(v.version)
+    except Exception:
+        return None
+
+
+def _revert_mlflow_champion(prev_version: str | None) -> None:
+    """Roll @champion back to `prev_version`.
+
+    Used when an iter trained a new version + promoted it via evaluate.py,
+    but the PR carrying the deployment.yaml annotation never merged. Without
+    this, MLflow records the new version as @champion while the deployed
+    pods still serve the previous one — the loop's view of "what's live"
+    diverges from the cluster.
+    """
+    if not prev_version:
+        print("  WARN: no previous @champion to revert to (registry was empty)")
+        return
+    try:
+        mlflow.set_tracking_uri(os.environ["MLFLOW_TRACKING_URI"])
+        client = mlflow.MlflowClient()
+        client.set_registered_model_alias("classifier", "champion", prev_version)
+        print(f"  ↩ Reverted @champion → v{prev_version}")
+    except Exception as e:
+        print(f"  WARN: failed to revert @champion to v{prev_version}: {e}")
+
+
 def open_iter_pr_with_auto_merge(
     proposal: dict,
     old_auc: float,
@@ -603,7 +654,12 @@ def open_iter_pr_with_auto_merge(
 
     # Per-iter branch off the *current* main HEAD. Picks up any [skip ci]
     # commits CI pushed back from the previous iter's merge.
-    iter_branch = f"auto/run-{run_id}-iter-{iter_num:02d}-{name[:30]}"
+    # `name` comes from the LLM. Git ref-format requires no spaces, no `..`,
+    # no `~`, `^`, `:`, `?`, `*`, `[`, `\`, no trailing `.`, etc. Slugify to
+    # the safe subset before stitching into the branch name — otherwise an
+    # LLM output like "tune α / β regularization" trips create_branch_from_main.
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-._")[:30] or "iter"
+    iter_branch = f"auto/run-{run_id}-iter-{iter_num:02d}-{slug}"
     github_commit.create_branch_from_main(
         token, gh_config["owner"], gh_config["repo"], iter_branch
     )
@@ -898,6 +954,12 @@ def run_loop(
         apply_changes(proposal)
         ruff_fix(proposal)
 
+        # Snapshot the registry's current @champion version BEFORE this iter
+        # trains anything. If evaluate.py promotes a new version but the PR
+        # carrying the deployment.yaml annotation never merges, we use this
+        # to roll @champion back so MLflow and the deployed pod stay coherent.
+        prev_champion_version = _get_champion_version()
+
         print(f"[{i}/{n_experiments}] Running pipeline...")
         pipeline_result = run_pipeline(timeout=KFP_TIMEOUT_SECONDS)
 
@@ -932,6 +994,8 @@ def run_loop(
             print(f"  ✓ IMPROVED: {best_auc:.4f} → {new_auc:.4f} (+{delta:.4f})")
             # log_to_tsv must run before commit so history.tsv is in the commit.
             log_to_tsv(i, proposal, pipeline_result, best_auc, "improved", usage=usage)
+            pr_merged = False
+            pr_err: str | None = None
             try:
                 pr_url = commit_improvement(
                     proposal,
@@ -962,7 +1026,7 @@ def run_loop(
                             gh_config["project"],
                             gh_config["secret"],
                         )
-                        merged = github_commit.wait_for_pr_merge(
+                        pr_merged = github_commit.wait_for_pr_merge(
                             token,
                             gh_config["owner"],
                             gh_config["repo"],
@@ -970,10 +1034,37 @@ def run_loop(
                             poll_interval_s=15,
                             timeout_s=600,
                         )
-                        if merged:
+                        if pr_merged:
                             print(f"  ✓ PR #{pr_num} merged.")
+                else:
+                    # No gh_config → the loop is running in a mode where PR
+                    # gating is not applicable (e.g. local dev). Treat as
+                    # merged so we don't roll back local file mutations.
+                    pr_merged = True
             except Exception as e:
-                print(f"  WARN: commit/merge-wait failed ({e}) — continuing loop")
+                pr_err = str(e)
+                print(f"  WARN: commit/merge-wait failed ({e})")
+            if not pr_merged:
+                # PR creation or merge did not complete. Roll back: the model
+                # was promoted to @champion inside evaluate.py before this
+                # branched off, but k8s/deployment.yaml on main never got the
+                # annotation bump (it lives in the unmerged PR). Without a
+                # rollback, MLflow says version vN is @champion but ArgoCD
+                # never rolls pods → pods continue serving the previous
+                # version forever. Mark iter as failed, restore files, and
+                # revert @champion so the cluster state stays coherent.
+                reason = pr_err or "PR did not merge within timeout"
+                print(
+                    f"  ✗ FAILED: improvement detected but PR not merged "
+                    f"({reason}). Reverting local files + MLflow champion."
+                )
+                revert_files(originals)
+                _revert_mlflow_champion(prev_champion_version)
+                log_to_mlflow(
+                    i, proposal, pipeline_result, best_auc, False, usage=usage
+                )
+                iters_since_improvement += 1
+                continue
             prev_best = best_auc
             best_auc = new_auc
             log_to_mlflow(i, proposal, pipeline_result, prev_best, True, usage=usage)

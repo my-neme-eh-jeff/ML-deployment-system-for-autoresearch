@@ -66,7 +66,15 @@ def train(
     (workdir / "data" / "processed").mkdir(parents=True, exist_ok=True)
     shutil.copy(train_csv.path, workdir / "data" / "processed" / "train.csv")
 
-    env = {**os.environ, "MLFLOW_TRACKING_URI": mlflow_tracking_uri}
+    # Pass the KFP placeholder for run-id through to train.py via env so
+    # the MLflow run gets tagged with `kfp_run_id`. The autoresearch loop
+    # queries by this tag, sidestepping the race where the latest MLflow
+    # run isn't actually the one this KFP pipeline just produced.
+    env = {
+        **os.environ,
+        "MLFLOW_TRACKING_URI": mlflow_tracking_uri,
+        "KFP_RUN_ID": os.environ.get("KFP_RUN_ID", ""),
+    }
     subprocess.run(["python", "-m", "src.train"], cwd=str(workdir), check=True, env=env)
 
     shutil.copy(workdir / "models" / "classifier.pkl", model_artifact.path)
@@ -135,6 +143,10 @@ def classifier_pipeline(
     )
     train_task.set_cpu_request("500m").set_memory_request("1Gi")
     train_task.set_cpu_limit("2").set_memory_limit("4Gi")
+    # Inject the KFP run id into the train component's env so the MLflow
+    # run gets tagged with `kfp_run_id`. The autoresearch loop searches by
+    # this tag instead of "latest run in experiment" — see auto_loop.py.
+    train_task.set_env_variable("KFP_RUN_ID", dsl.PIPELINE_JOB_ID_PLACEHOLDER)
 
     evaluate_task = evaluate(
         params_yaml=params_yaml,

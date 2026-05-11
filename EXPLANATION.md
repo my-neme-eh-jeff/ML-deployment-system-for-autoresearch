@@ -1085,9 +1085,20 @@ The autoresearch loop runs as a Kubernetes Job inside the cluster (`jobs/autores
 
 ### 14.3 Run-id linking, not "latest run" search
 
-`train.py` writes `models/run_id.txt` after `mlflow.start_run()`. `evaluate.py` reads that file and logs metrics into the *exact* run train.py created. There's no "find the most recent run" search.
+`train.py` writes `models/run_id.txt` after `mlflow.start_run()`. `evaluate.py` reads that file and logs metrics into the *exact* run train.py created. The autoresearch controller then queries MLflow for `tags.kfp_run_id = '<this KFP run id>'` — not "latest run in experiment". The KFP run id is plumbed via `dsl.PIPELINE_JOB_ID_PLACEHOLDER` → component env `KFP_RUN_ID` → MLflow tag.
 
-**Why this matters under autoresearch.** When the loop is running, multiple pipeline runs can complete in close succession. A "search for latest" pattern can attribute evaluation metrics to the wrong run. The run-id link makes the train→evaluate→register sequence ironclad.
+**Why this matters under autoresearch.** When the loop is running, multiple pipeline runs can complete in close succession. A "search for latest" pattern can attribute evaluation metrics to the wrong run. The run-id link inside KFP, plus the KFP-run-id tag on the MLflow side, makes the train→evaluate→register→read-back sequence ironclad against concurrent runs.
+
+### 14.4 What the loop edits vs. what KFP actually executes (an honest scope note)
+
+The autoresearch loop accepts proposals that may rewrite `configs/params.yaml`, `src/train.py`, and `src/preprocess.py`. Those edits get committed to a feature branch, surface in the PR for review, and — if the PR merges — land on `main`, eventually rebaking the `pipeline-kfp:latest` image on the next CI run.
+
+The KFP component, however, pins `image: pipeline-kfp:latest`, which is whatever image last finished CI. The component runs `python -m src.preprocess` / `src.train` / `src.evaluate` against the source baked into *that* image. So within a single iteration:
+
+- Params edits **are** executed against the proposed change (params are passed in as a string parameter to the pipeline).
+- Source edits to `src/train.py` and `src/preprocess.py` **show up in the PR** but **are not what KFP just trained**. The previous image's source ran. The PR's source becomes live only after the PR merges → CI rebuilds → the next iteration uses it.
+
+Net effect: in practice the loop has mostly proposed params/feature-list changes, so the "Claude's diff trained and won" framing has held up. But it is a real architectural limitation: a single-iter source-only change is committed to git before being executed end-to-end in the cluster. The portfolio-grade fix would be a per-iteration KFP image build keyed by the proposed source; that's outside the current scope.
 
 ---
 

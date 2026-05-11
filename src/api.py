@@ -119,9 +119,12 @@ def predict(req: PredictRequest):
             list(req.data.keys()),
             e,
         )
+        # Don't echo `e` back to callers — sklearn / pandas error text leaks
+        # column names, dtypes, package versions, and sometimes file paths.
+        # The full exception is in the log line above for ops.
         return JSONResponse(
             status_code=422,
-            content={"error": f"Prediction failed: {e}"},
+            content={"error": "Prediction failed; see server logs."},
         )
     # Per-request attribution: which model version served this prediction,
     # what input shape, what was returned. Lets ops trace any complaint about
