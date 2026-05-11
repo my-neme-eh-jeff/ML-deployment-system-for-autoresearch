@@ -39,7 +39,7 @@ def preprocess(
     # parquet OOM'd this pod at the 1 GiB limit, with no traceback).
     gcsfs.GCSFileSystem().get(raw_data_gcs_path, str(workdir / csv_path))
 
-    subprocess.run(["python", "src/preprocess.py"], cwd=str(workdir), check=True)
+    subprocess.run(["python", "-m", "src.preprocess"], cwd=str(workdir), check=True)
 
     shutil.copy(workdir / "data" / "processed" / "train.csv", train_csv.path)
     shutil.copy(workdir / "data" / "processed" / "test.csv", test_csv.path)
@@ -67,7 +67,7 @@ def train(
     shutil.copy(train_csv.path, workdir / "data" / "processed" / "train.csv")
 
     env = {**os.environ, "MLFLOW_TRACKING_URI": mlflow_tracking_uri}
-    subprocess.run(["python", "src/train.py"], cwd=str(workdir), check=True, env=env)
+    subprocess.run(["python", "-m", "src.train"], cwd=str(workdir), check=True, env=env)
 
     shutil.copy(workdir / "models" / "classifier.pkl", model_artifact.path)
     shutil.copy(workdir / "models" / "run_id.txt", run_id_artifact.path)
@@ -99,7 +99,9 @@ def evaluate(
     shutil.copy(run_id_artifact.path, workdir / "models" / "run_id.txt")
 
     env = {**os.environ, "MLFLOW_TRACKING_URI": mlflow_tracking_uri}
-    subprocess.run(["python", "src/evaluate.py"], cwd=str(workdir), check=True, env=env)
+    subprocess.run(
+        ["python", "-m", "src.evaluate"], cwd=str(workdir), check=True, env=env
+    )
 
     shutil.copy(workdir / "metrics.json", metrics.path)
 

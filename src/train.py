@@ -21,10 +21,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import FunctionTransformer, OneHotEncoder, StandardScaler
 from sklearn.tree import DecisionTreeClassifier
 
-try:
-    from src.features import apply_feature_engineering, derived_numeric_features
-except ImportError:
-    from features import apply_feature_engineering, derived_numeric_features
+from src.features import apply_feature_engineering, derived_numeric_features
 
 MODEL_NAME = "classifier"
 EXPERIMENT_NAME = "training"

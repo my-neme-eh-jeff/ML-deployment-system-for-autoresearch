@@ -122,12 +122,12 @@ deploymentSpec:
           \ workdir / \"data\" / \"processed\" / \"test.csv\")\n    shutil.copy(model_artifact.path,\
           \ workdir / \"models\" / \"classifier.pkl\")\n    shutil.copy(run_id_artifact.path,\
           \ workdir / \"models\" / \"run_id.txt\")\n\n    env = {**os.environ, \"\
-          MLFLOW_TRACKING_URI\": mlflow_tracking_uri}\n    subprocess.run([\"python\"\
-          , \"src/evaluate.py\"], cwd=str(workdir), check=True, env=env)\n\n    shutil.copy(workdir\
-          \ / \"metrics.json\", metrics.path)\n\n    run_id = (workdir / \"models\"\
-          \ / \"run_id.txt\").read_text().strip()\n    print(f\"MLflow run_id: {run_id}\"\
-          )\n    print(f\"Metrics: {Path(metrics.path).read_text()}\")\n    return\
-          \ run_id\n\n"
+          MLFLOW_TRACKING_URI\": mlflow_tracking_uri}\n    subprocess.run(\n     \
+          \   [\"python\", \"-m\", \"src.evaluate\"], cwd=str(workdir), check=True,\
+          \ env=env\n    )\n\n    shutil.copy(workdir / \"metrics.json\", metrics.path)\n\
+          \n    run_id = (workdir / \"models\" / \"run_id.txt\").read_text().strip()\n\
+          \    print(f\"MLflow run_id: {run_id}\")\n    print(f\"Metrics: {Path(metrics.path).read_text()}\"\
+          )\n    return run_id\n\n"
         image: ghcr.io/my-neme-eh-jeff/pipeline-kfp:latest
         resources:
           cpuLimit: 1.0
@@ -176,9 +176,9 @@ deploymentSpec:
           \ loading the full dataframe\n    # into memory (a pd.read + pd.to_parquet\
           \ round-trip on the 200K-row IEEE-CIS\n    # parquet OOM'd this pod at the\
           \ 1 GiB limit, with no traceback).\n    gcsfs.GCSFileSystem().get(raw_data_gcs_path,\
-          \ str(workdir / csv_path))\n\n    subprocess.run([\"python\", \"src/preprocess.py\"\
-          ], cwd=str(workdir), check=True)\n\n    shutil.copy(workdir / \"data\" /\
-          \ \"processed\" / \"train.csv\", train_csv.path)\n    shutil.copy(workdir\
+          \ str(workdir / csv_path))\n\n    subprocess.run([\"python\", \"-m\", \"\
+          src.preprocess\"], cwd=str(workdir), check=True)\n\n    shutil.copy(workdir\
+          \ / \"data\" / \"processed\" / \"train.csv\", train_csv.path)\n    shutil.copy(workdir\
           \ / \"data\" / \"processed\" / \"test.csv\", test_csv.path)\n    shutil.copy(workdir\
           \ / \"data\" / \"processed\" / \"stats.json\", stats.path)\n\n"
         image: ghcr.io/my-neme-eh-jeff/pipeline-kfp:latest
@@ -226,8 +226,8 @@ deploymentSpec:
           \n    (workdir / \"data\" / \"processed\").mkdir(parents=True, exist_ok=True)\n\
           \    shutil.copy(train_csv.path, workdir / \"data\" / \"processed\" / \"\
           train.csv\")\n\n    env = {**os.environ, \"MLFLOW_TRACKING_URI\": mlflow_tracking_uri}\n\
-          \    subprocess.run([\"python\", \"src/train.py\"], cwd=str(workdir), check=True,\
-          \ env=env)\n\n    shutil.copy(workdir / \"models\" / \"classifier.pkl\"\
+          \    subprocess.run([\"python\", \"-m\", \"src.train\"], cwd=str(workdir),\
+          \ check=True, env=env)\n\n    shutil.copy(workdir / \"models\" / \"classifier.pkl\"\
           , model_artifact.path)\n    shutil.copy(workdir / \"models\" / \"run_id.txt\"\
           , run_id_artifact.path)\n\n"
         image: ghcr.io/my-neme-eh-jeff/pipeline-kfp:latest

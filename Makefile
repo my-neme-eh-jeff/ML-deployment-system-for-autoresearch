@@ -17,7 +17,7 @@ repro:
 	MLFLOW_TRACKING_URI=http://localhost:5000 uv run dvc repro
 
 train:
-	MLFLOW_TRACKING_URI=http://localhost:5000 uv run python src/train.py
+	MLFLOW_TRACKING_URI=http://localhost:5000 uv run python -m src.train
 
 serve:
 	MLFLOW_TRACKING_URI=http://localhost:5000 uv run uvicorn src.api:app --reload --port 8000
@@ -38,7 +38,7 @@ mlflow:
 	kubectl port-forward -n mlflow svc/mlflow 5000:5000
 
 promote:
-	MLFLOW_TRACKING_URI=http://localhost:5000 uv run python src/promote.py
+	MLFLOW_TRACKING_URI=http://localhost:5000 uv run python -m src.promote
 
 test:
 	uv run pytest tests/ -v
@@ -72,9 +72,9 @@ auto-experiment:
 # Prerequisite: 'make mlflow' port-forward must be running in another terminal.
 bootstrap:
 	@echo "Step 1/2: Training model and registering in cluster MLflow..."
-	MLFLOW_TRACKING_URI=http://localhost:5000 uv run python src/train.py
+	MLFLOW_TRACKING_URI=http://localhost:5000 uv run python -m src.train
 	@echo "Step 2/2: Evaluating and setting @champion alias..."
-	MLFLOW_TRACKING_URI=http://localhost:5000 uv run python src/evaluate.py
+	MLFLOW_TRACKING_URI=http://localhost:5000 uv run python -m src.evaluate
 	@echo ""
 	@echo "Bootstrap complete. inference-api pods will load @champion on next restart."
 	@echo "Run 'kubectl rollout restart deployment/inference-api -n inference' to trigger now."
