@@ -1,1 +1,2 @@
 timestamp	exp_num	experiment_name	change_type	auc_before	auc_after	delta	outcome	input_tokens	output_tokens	cost_usd	rationale
+2026-05-11T16:55	1	random_forest_expanded_features	params_only	0.0000	0.9323	+0.9323	improved	6548	817	0.0319	The current model is a DecisionTreeClassifier with only 2 features (TransactionAmt and ProductCD), which is a very weak 
