@@ -21,6 +21,9 @@ FILES = (
     "configs/params.yaml",
     "src/train.py",
     "src/preprocess.py",
+    "src/features.py",
+    "dvc.yaml",
+    "dvc.lock",
 )
 for path in FILES:
     try:

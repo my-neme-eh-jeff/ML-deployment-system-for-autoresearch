@@ -1,7 +1,13 @@
-.PHONY: repro train serve clean mlflow mlflow-kill promote test lint compile-kfp \
+.PHONY: setup repro train serve clean mlflow mlflow-kill promote test lint compile-kfp \
        argocd-ui argocd-password deploy-argocd deploy-mlflow k8s-status bootstrap demo demo-stop \
        gke-connect cluster-sleep cluster-wake gke-status gke-urls kfp-run \
        autoresearch-secret autoresearch-submit autoresearch-logs reset-for-fresh-run
+
+# ── Onboarding ─────────────────────────────────────────────────────
+# Interactive wizard — pick cloud + tracker, enter creds, write .env.
+# Run this FIRST on a fresh clone. ~2 minutes.
+setup:
+	@uv run python scripts/setup.py
 
 # ── Local development ──────────────────────────────────────────────
 

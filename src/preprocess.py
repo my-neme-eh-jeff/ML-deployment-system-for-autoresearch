@@ -44,12 +44,14 @@ def preprocess(
         if col in df.columns:
             df = df.drop(columns=[col])
 
-    # Coerce numeric columns to float and median-fill any NaNs that result —
-    # handles "blank" / non-numeric strings generically.
+    # Coerce numeric columns to float. NaNs left in place — the SimpleImputer
+    # inside the sklearn pipeline (see src/train.py:build_pipeline) fills them
+    # AT FIT TIME using train-only statistics, so test-set values can't leak
+    # into the imputation median. Previously this loop also did .fillna() on
+    # the full DataFrame BEFORE the train/test split — that's textbook leakage.
     for col in numeric:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
-            df[col] = df[col].fillna(df[col].median())
 
     target_mapping = dataset.get("target_mapping")
     if target_mapping:

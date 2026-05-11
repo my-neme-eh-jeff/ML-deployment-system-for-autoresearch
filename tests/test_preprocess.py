@@ -21,12 +21,17 @@ def test_preprocess_encodes_target(sample_processed_data):
     assert set(train["Churn"].unique()).issubset({0, 1})
 
 
-def test_preprocess_handles_blank_numeric(sample_processed_data):
-    """Raw `TotalCharges` had a blank string; coerce-to-numeric + median-fill should clean it."""
+def test_preprocess_coerces_blank_numeric_to_nan(sample_processed_data):
+    """Raw `TotalCharges` had a blank string; coerce-to-numeric should turn
+    that into NaN. Imputation is now done by the SimpleImputer inside the
+    sklearn pipeline (train.py:build_pipeline) so it fits on TRAIN ONLY —
+    test-set values can't leak into the median. preprocess.py used to
+    `.fillna(median())` on the full DataFrame before split, which is the
+    canonical data-leakage pattern.
+    """
     train = pd.read_csv(sample_processed_data / "train.csv")
-    test = pd.read_csv(sample_processed_data / "test.csv")
-    combined = pd.concat([train, test])
-    assert combined["TotalCharges"].notna().all()
+    # Column should be float (coerce succeeded); blanks become NaN, not strings.
+    assert train["TotalCharges"].dtype.kind == "f"
 
 
 def test_preprocess_stats_json(sample_processed_data):

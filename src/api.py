@@ -3,6 +3,8 @@
 import logging
 import os
 import threading
+import time
+from contextlib import asynccontextmanager
 from typing import Any
 
 import mlflow.sklearn
@@ -20,7 +22,6 @@ MODEL_URI = f"models:/{MODEL_NAME}@champion"
 
 mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
 
-app = FastAPI(title="ML Deployment System for Autoresearch — Inference API")
 model = None
 model_version: str | None = None
 
@@ -36,24 +37,53 @@ class PredictRequest(BaseModel):
 
 
 def _load_model_in_background():
+    """Load @champion from MLflow with retry+backoff.
+
+    Previously this ran once; a transient MLflow outage at pod startup left
+    `model = None` forever and the pod stuck at 503 (the liveness probe is
+    /health/live which always returns 200, so K8s never restarts it). Now we
+    retry indefinitely with capped backoff — when MLflow recovers, the pod
+    catches up automatically.
+    """
     global model, model_version
-    try:
-        logger.info(f"Loading {MODEL_URI} from {MLFLOW_TRACKING_URI} ...")
-        model = mlflow.sklearn.load_model(MODEL_URI)
+    attempt = 0
+    while True:
         try:
-            client = mlflow.MlflowClient()
-            v = client.get_model_version_by_alias(MODEL_NAME, "champion")
-            model_version = v.version
-            logger.info(f"Loaded {MODEL_NAME} v{model_version}.")
-        except Exception:
-            logger.info("Loaded model (version metadata unavailable).")
-    except Exception as e:
-        logger.error(f"Failed to load model: {e}. /health stays 503.")
+            logger.info(
+                f"Loading {MODEL_URI} from {MLFLOW_TRACKING_URI} "
+                f"(attempt {attempt + 1})..."
+            )
+            loaded = mlflow.sklearn.load_model(MODEL_URI)
+            try:
+                client = mlflow.MlflowClient()
+                v = client.get_model_version_by_alias(MODEL_NAME, "champion")
+                model_version = v.version
+                logger.info(f"Loaded {MODEL_NAME} v{model_version}.")
+            except Exception:
+                logger.info("Loaded model (version metadata unavailable).")
+            model = loaded
+            return
+        except Exception as e:
+            attempt += 1
+            # 2, 4, 8, 16, 32, capped at 60s. After ~20 minutes of failures
+            # the pod has tried 20+ times — still no harm in keeping going.
+            backoff = min(60, 2 ** min(attempt, 6))
+            logger.warning(
+                f"Model load failed (attempt {attempt}): {e}. Retrying in {backoff}s..."
+            )
+            time.sleep(backoff)
 
 
-@app.on_event("startup")
-def load_model():
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
     threading.Thread(target=_load_model_in_background, daemon=True).start()
+    yield
+
+
+app = FastAPI(
+    title="ML Deployment System for Autoresearch — Inference API",
+    lifespan=lifespan,
+)
 
 
 @app.get("/health/live")

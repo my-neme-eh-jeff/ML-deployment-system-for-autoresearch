@@ -4,6 +4,7 @@ import argparse
 import csv
 import json
 import os
+import random
 import subprocess
 import sys
 import time
@@ -235,7 +236,12 @@ Propose ONE specific change to improve AUC-ROC. Choose something not yet tried, 
     total_in = 0
     total_out = 0
     last_err: Exception | None = None
-    for attempt in range(3):
+    # Exponential backoff with jitter for transient Anthropic errors:
+    # 529 = "their servers overloaded" (e.g. just after a model launch);
+    # 429 = your account's per-minute token bucket; both clear within seconds.
+    # Schema/tool errors are NOT retryable — fail fast on those.
+    max_attempts = 5
+    for attempt in range(max_attempts):
         try:
             response = client.messages.create(
                 model=model,
@@ -263,14 +269,41 @@ Propose ONE specific change to improve AUC-ROC. Choose something not yet tried, 
                 "output_tokens": total_out,
                 "cost_usd": estimate_cost_usd(model, total_in, total_out),
             }
-        except Exception as e:
+        except (
+            anthropic.APIConnectionError,
+            anthropic.APITimeoutError,
+            anthropic.RateLimitError,
+            anthropic.InternalServerError,
+            anthropic.APIStatusError,
+        ) as e:
             last_err = e
-            if attempt == 2:
+            # Don't retry on 4xx client errors (bad request, auth) — those
+            # won't fix themselves and burning more retries just wastes time.
+            status = getattr(e, "status_code", None)
+            if (
+                isinstance(e, anthropic.APIStatusError)
+                and status
+                and 400 <= status < 500
+                and status not in (408, 429)
+            ):
                 raise RuntimeError(
-                    f"Claude tool-use failed after 3 attempts: {e}"
+                    f"Claude returned non-retryable {status}: {e}"
                 ) from e
-            print(f"  [retry {attempt + 1}/3] {type(e).__name__}: {e}")
-            time.sleep(2)
+            if attempt == max_attempts - 1:
+                raise RuntimeError(
+                    f"Claude failed after {max_attempts} attempts: {e}"
+                ) from e
+            # Exponential backoff with jitter: 2s, 4s, 8s, 16s + 0-1s jitter.
+            backoff = (2 ** (attempt + 1)) + random.uniform(0, 1)
+            print(
+                f"  [retry {attempt + 1}/{max_attempts}] {type(e).__name__} — "
+                f"sleeping {backoff:.1f}s"
+            )
+            time.sleep(backoff)
+        except Exception as e:
+            # Schema-shape errors and similar — fail fast.
+            last_err = e
+            raise RuntimeError(f"Claude tool-use failed (non-retryable): {e}") from e
     raise RuntimeError(f"Unreachable; last_err={last_err}")
 
 
@@ -302,13 +335,19 @@ def apply_changes(proposal: dict):
 
 
 def revert_files(originals: dict):
-    files = list(originals.keys()) if originals else EDITABLE_FILES
-    subprocess.run(
-        ["git", "checkout", "--", *files],
-        cwd=PROJECT_ROOT,
-        check=False,
-        capture_output=True,
-    )
+    """Restore the files we mutated to their pre-iter bytes.
+
+    `originals` is produced by `snapshot_files` BEFORE `apply_changes` runs,
+    so it holds the exact bytes the loop saw at the start of this iter. We
+    write those bytes back directly — never shell out to `git checkout`,
+    because inside the cluster Job the git repo is a freshly-init'd one-commit
+    thing whose HEAD is the LLM's bad write (see scripts/run-autoresearch.sh).
+    `git checkout` against that HEAD silently "reverts" to the bad write.
+    """
+    if not originals:
+        return
+    for rel_path, content in originals.items():
+        (PROJECT_ROOT / rel_path).write_text(content)
 
 
 def ruff_fix(proposal: dict):
@@ -397,18 +436,44 @@ def run_pipeline_kfp(timeout: int = 900) -> dict:
 
     print(f"  → submitting KFP run to {kfp_host}")
     kfp = Client(host=kfp_host)
-    try:
-        run = kfp.create_run_from_pipeline_package(
-            str(pipeline_yaml),
-            arguments={"params_yaml": params_yaml_content},
-            run_name=f"autoresearch-{int(time.time())}",
-        )
-    except Exception as e:
+    # Retry KFP submit — KFP API server can return 500 when its MySQL backend
+    # is briefly unreachable (e.g. right after cluster wake before the
+    # CloudSQL Auth Proxy sidecar is ready, or a transient connection blip
+    # during sustained load). One transient failure shouldn't burn a whole iter
+    # (Claude tokens already spent). 3 attempts with backoff is enough — if
+    # KFP is really down for >30s, the iter should fail honestly.
+    submit_attempts = 3
+    run = None
+    last_submit_err: Exception | None = None
+    for attempt in range(submit_attempts):
+        try:
+            run = kfp.create_run_from_pipeline_package(
+                str(pipeline_yaml),
+                arguments={"params_yaml": params_yaml_content},
+                run_name=f"autoresearch-{int(time.time())}",
+            )
+            break
+        except Exception as e:
+            last_submit_err = e
+            if attempt == submit_attempts - 1:
+                return {
+                    "success": False,
+                    "auc": 0.0,
+                    "metrics": {},
+                    "stderr": f"KFP submit (after {submit_attempts} retries): {e}",
+                }
+            backoff = (2 ** (attempt + 1)) + random.uniform(0, 1)
+            print(
+                f"  [retry {attempt + 1}/{submit_attempts}] KFP submit failed "
+                f"({type(e).__name__}: {str(e)[:100]}) — sleeping {backoff:.1f}s"
+            )
+            time.sleep(backoff)
+    if run is None:
         return {
             "success": False,
             "auc": 0.0,
             "metrics": {},
-            "stderr": f"KFP submit: {e}",
+            "stderr": f"KFP submit (impossible): {last_submit_err}",
         }
 
     print(f"  → KFP run id: {run.run_id} — waiting up to {timeout}s")
@@ -880,8 +945,35 @@ def run_loop(
                 )
                 if pr_url:
                     pr_urls.append(pr_url)
+                # Block until this iter's PR has actually merged into main
+                # before starting the next iter. Without this, iter N+1
+                # branches off stale main (missing iter N's history.tsv row
+                # and dvc.lock update), and either GraphQL rejects on parent
+                # mismatch or iter N+1 overwrites iter N's history row.
+                if pr_url and gh_config:
+                    pr_num = github_commit.pr_number_from_url(pr_url)
+                    if pr_num is not None:
+                        print(
+                            f"  ⏳ Waiting for PR #{pr_num} to merge before next iter..."
+                        )
+                        token = github_commit.get_installation_token(
+                            gh_config["app_id"],
+                            gh_config["installation_id"],
+                            gh_config["project"],
+                            gh_config["secret"],
+                        )
+                        merged = github_commit.wait_for_pr_merge(
+                            token,
+                            gh_config["owner"],
+                            gh_config["repo"],
+                            pr_num,
+                            poll_interval_s=15,
+                            timeout_s=600,
+                        )
+                        if merged:
+                            print(f"  ✓ PR #{pr_num} merged.")
             except Exception as e:
-                print(f"  WARN: commit failed ({e}) — continuing loop")
+                print(f"  WARN: commit/merge-wait failed ({e}) — continuing loop")
             prev_best = best_auc
             best_auc = new_auc
             log_to_mlflow(i, proposal, pipeline_result, prev_best, True, usage=usage)

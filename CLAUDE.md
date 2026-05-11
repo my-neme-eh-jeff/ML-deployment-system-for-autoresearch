@@ -97,7 +97,7 @@ make demo-stop      # Kill all port-forwards
 | `kubeflow` | KFP UI | `http://34.93.2.209` |
 | `inference` | inference-api (2 pods, HPA 2-10) | `http://34.47.242.89` |
 
-ArgoCD credentials: `admin` / `TMwwd4OpkcL6fPRy` (re-read with `kubectl get secret -n argocd argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d`)
+ArgoCD credentials: `admin` / *(rotated; current password lives in local `NOTES.md`, gitignored)*. The initial bootstrap secret has been replaced — re-rotation: `kubectl -n argocd patch secret argocd-secret -p '{"stringData":{"admin.password":"$2a$10$...","admin.passwordMtime":"..."}}'` then restart argocd-server.
 
 > **Note:** LoadBalancer IPs are stable on GKE (unlike the local vind setup). Run `make gke-status` to print live IPs.
 

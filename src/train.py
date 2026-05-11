@@ -1,6 +1,7 @@
 """Train a binary classifier — schema and hyperparameters from configs/params.yaml."""
 
 import pickle
+from functools import partial
 from pathlib import Path
 
 import mlflow
@@ -14,6 +15,7 @@ from sklearn.ensemble import (
     HistGradientBoostingClassifier,
     RandomForestClassifier,
 )
+from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import FunctionTransformer, OneHotEncoder, StandardScaler
@@ -96,20 +98,43 @@ def _build_classifier(params: dict):
 
 
 def build_pipeline(dataset: dict, params: dict) -> Pipeline:
-    numeric = list(dataset.get("numeric_features", [])) + derived_numeric_features(
-        params
-    )
+    """Build the full sklearn Pipeline.
+
+    Three steps, in order:
+      1. feature_eng — applies apply_feature_engineering(X, params). Derives
+         columns like charges_per_month from raw input. This step is part of
+         the saved pipeline so train, evaluate, AND inference apply the same
+         transformation — no drift possible.
+      2. preprocessor — ColumnTransformer with SimpleImputer(median) +
+         StandardScaler on numeric, OneHotEncoder on categorical. The imputer
+         fits ON TRAIN ONLY (via Pipeline contract) so test/inference rows
+         can't leak into the median.
+      3. classifier — whatever model_type says.
+    """
+    base_numeric = list(dataset.get("numeric_features", []))
+    derived = [c for c in derived_numeric_features(params) if c not in base_numeric]
+    numeric = base_numeric + derived
     categorical = list(dataset.get("categorical_features", []))
 
+    # Step 1: feature engineering bound to current `params`. `partial` is
+    # picklable; lambdas are not — and the whole pipeline is pickled to disk.
+    feature_eng = FunctionTransformer(
+        partial(apply_feature_engineering, train_params=params),
+        validate=False,
+    )
+
+    # Step 2's numeric branch: impute → (optional log) → scale.
+    imputer_step = ("imputer", SimpleImputer(strategy="median"))
     if params.get("use_log_transform"):
         numeric_transformer = Pipeline(
             [
+                imputer_step,
                 ("log", FunctionTransformer(np.log1p, validate=False)),
                 ("scaler", StandardScaler()),
             ]
         )
     else:
-        numeric_transformer = StandardScaler()
+        numeric_transformer = Pipeline([imputer_step, ("scaler", StandardScaler())])
 
     transformers = []
     if numeric:
@@ -127,9 +152,13 @@ def build_pipeline(dataset: dict, params: dict) -> Pipeline:
             "No features declared — set numeric_features or categorical_features in params.dataset."
         )
 
-    preprocessor = ColumnTransformer(transformers=transformers)
+    preprocessor = ColumnTransformer(transformers=transformers, remainder="drop")
     return Pipeline(
-        [("preprocessor", preprocessor), ("classifier", _build_classifier(params))]
+        [
+            ("feature_eng", feature_eng),
+            ("preprocessor", preprocessor),
+            ("classifier", _build_classifier(params)),
+        ]
     )
 
 
@@ -150,7 +179,10 @@ def train(
     df = pd.read_csv(train_path)
     X = df.drop(columns=[target])
     y = df[target]
-    X = apply_feature_engineering(X, params)
+    # Note: apply_feature_engineering is NO LONGER called here — it's the
+    # first step of the sklearn Pipeline (built in build_pipeline below),
+    # so the saved model auto-applies it at inference too. Calling it
+    # manually here would double-apply it.
 
     # Filter the schema against the actual training frame: any column the
     # autoresearch loop proposed that didn't survive preprocess (e.g. a

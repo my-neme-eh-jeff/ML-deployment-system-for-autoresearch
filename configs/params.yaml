@@ -31,7 +31,9 @@ evaluate:
 # DVC stages because it's not declared as a `params:` dependency in dvc.yaml.
 auto_experiment:
   baseline_auc: 0.0
-  min_improvement: 0.001
+  # 0.003 ≈ one standard error of AUC on a 40K-row test set; below this is noise.
+  # Previously 0.001 — too low, the loop promoted on random fluctuations.
+  min_improvement: 0.003
   # Stop the loop early after this many consecutive iters without improvement.
   # 0 disables. Counts: failed pipeline, reverted (sub-threshold), Claude errors.
   max_iterations_without_improvement: 10

@@ -269,6 +269,58 @@ def _enable_auto_merge(token: str, pr_node_id: str, commit_headline: str) -> Non
         raise RuntimeError(f"auto-merge GraphQL errors: {body['errors']}")
 
 
+def wait_for_pr_merge(
+    token: str,
+    owner: str,
+    repo: str,
+    pr_number: int,
+    poll_interval_s: int = 15,
+    timeout_s: int = 600,
+) -> bool:
+    """Block until the PR is merged (or closed without merging), or timeout.
+
+    The autoresearch loop opens iter N's PR with auto-merge, then moves on.
+    But iter N+1 needs iter N's commits on main (especially the history.tsv
+    row and dvc.lock update) before branching off, otherwise the per-iter
+    branches diverge. This poll plugs that hole.
+
+    Returns True if merged, False if closed unmerged or timed out.
+    """
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+    }
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        r = requests.get(
+            f"{GITHUB_API}/repos/{owner}/{repo}/pulls/{pr_number}",
+            headers=headers,
+            timeout=30,
+        )
+        if r.status_code != 200:
+            print(f"  [pr#{pr_number}] poll returned {r.status_code}, retrying...")
+            time.sleep(poll_interval_s)
+            continue
+        pr = r.json()
+        if pr.get("merged"):
+            return True
+        if pr.get("state") == "closed":
+            print(
+                f"  [pr#{pr_number}] closed without merging — auto-merge may have "
+                f"failed (CI red? branch protection?). Continuing loop anyway."
+            )
+            return False
+        time.sleep(poll_interval_s)
+    print(f"  [pr#{pr_number}] not merged within {timeout_s}s — continuing anyway")
+    return False
+
+
+def pr_number_from_url(url: str) -> int | None:
+    """Extract integer PR number from a github.com/.../pull/N URL."""
+    m = re.search(r"/pull/(\d+)$", url)
+    return int(m.group(1)) if m else None
+
+
 def github_config_from_env() -> dict | None:
     """Returns None if any of the 6 required env vars is missing (local dev)."""
     required = [

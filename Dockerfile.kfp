@@ -1,21 +1,27 @@
 FROM python:3.12-slim
 
-# Pre-install all KFP pipeline dependencies in image layers (not in writable layer).
-# GKE Autopilot limits ephemeral storage to 1Gi by default — runtime pip installs
-# of sklearn + mlflow + pandas exceed this.
-RUN pip install --no-cache-dir \
-    pandas==2.3.3 \
-    pyarrow==21.0.0 \
-    scikit-learn==1.8.0 \
-    mlflow==3.10.1 \
-    "numpy>=2.0" \
-    pyyaml \
-    gcsfs==2025.7.0 \
-    kfp==2.16.0
+WORKDIR /app
+
+# git is needed by DVC for project-root detection inside KFP pods.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends git ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir uv
+
+# Install via uv against the same lockfile the other two images use — this
+# guarantees inference-api, pipeline-kfp, and autoresearch-loop ship identical
+# sklearn / mlflow / pandas versions. Previously this image hardcoded pip
+# versions that could drift from uv.lock, breaking artifact compatibility
+# between the training pod and the inference pod.
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev
 
 # Bake the project source so the KFP @component wrappers can shell out to
 # src/preprocess.py / src/train.py / src/evaluate.py. The /app layout matches
 # what the source code expects (PROJECT_ROOT = /app).
-WORKDIR /app
 COPY src/ src/
 COPY configs/ configs/
+COPY auto_experiment/ auto_experiment/
+
+ENV PATH="/app/.venv/bin:${PATH}"
