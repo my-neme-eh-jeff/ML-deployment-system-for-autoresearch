@@ -28,7 +28,7 @@ spec:
       containers:
         - name: inference-api
           # CI rewrites this image SHA on every push to main.
-          image: ghcr.io/my-neme-eh-jeff/inference-api:2bbf07bea3e09aa47e30f46389d4a22d8f118c66
+          image: ghcr.io/my-neme-eh-jeff/inference-api:e994d802076ea8b0784a892b51351a1d413c450d
           imagePullPolicy: Always
           ports:
             - containerPort: 8000
