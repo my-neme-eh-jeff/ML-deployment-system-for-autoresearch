@@ -80,6 +80,8 @@ jobs:
               - 'Dockerfile.kfp'
               - 'src/**'
               - 'configs/**'
+              - 'pyproject.toml'
+              - 'uv.lock'
             autoresearch:
               - 'Dockerfile.autoresearch'
               - 'auto_experiment/**'
@@ -87,6 +89,8 @@ jobs:
               - 'configs/**'
               - 'pipelines/**'
               - '.dvc/**'
+              - 'pyproject.toml'
+              - 'uv.lock'
               - 'dvc.yaml'
               - 'dvc.lock'
               - 'data/**'
