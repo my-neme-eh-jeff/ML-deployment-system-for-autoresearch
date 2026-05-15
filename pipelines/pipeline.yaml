@@ -2,6 +2,7 @@
 # Name: classifier-training-pipeline
 # Description: Full preprocess → train → evaluate DAG. params_yaml is the entire file content.
 # Inputs:
+#    kfp_run_id: str
 #    mlflow_tracking_uri: str [Default: 'http://mlflow.mlflow.svc.cluster.local:5000']
 #    params_yaml: str
 #    raw_data_gcs_path: str [Default: 'gs://customer-churn-dvc-remote/raw/ieee_cis.parquet']
@@ -314,8 +315,7 @@ root:
                 producerTask: preprocess
           parameters:
             kfp_run_id:
-              runtimeValue:
-                constant: '{{$.pipeline_job_uuid}}'
+              componentInputParameter: kfp_run_id
             mlflow_tracking_uri:
               componentInputParameter: mlflow_tracking_uri
             params_yaml:
@@ -324,6 +324,8 @@ root:
           name: train
   inputDefinitions:
     parameters:
+      kfp_run_id:
+        parameterType: STRING
       mlflow_tracking_uri:
         defaultValue: http://mlflow.mlflow.svc.cluster.local:5000
         isOptional: true

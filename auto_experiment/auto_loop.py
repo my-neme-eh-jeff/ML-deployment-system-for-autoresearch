@@ -446,11 +446,24 @@ def run_pipeline_kfp(timeout: int = 900) -> dict:
     submit_attempts = 3
     run = None
     last_submit_err: Exception | None = None
+    # Generate a UUID client-side and pass it to the train component as the
+    # MLflow tag value. We don't use dsl.PIPELINE_JOB_ID_PLACEHOLDER because
+    # KFP v2 only substitutes that placeholder in command/arg slots, not in
+    # component parameter values — the literal `{{$.pipeline_job_uuid}}`
+    # string ended up as the tag during smoke-testing. Going client-side
+    # decouples us from that quirk; the trade-off is the tag isn't equal to
+    # KFP's run.run_id, but it's still unique and locatable.
+    import uuid as _uuid
+
+    iter_tag = _uuid.uuid4().hex
     for attempt in range(submit_attempts):
         try:
             run = kfp.create_run_from_pipeline_package(
                 str(pipeline_yaml),
-                arguments={"params_yaml": params_yaml_content},
+                arguments={
+                    "params_yaml": params_yaml_content,
+                    "kfp_run_id": iter_tag,
+                },
                 run_name=f"autoresearch-{int(time.time())}",
             )
             break
@@ -497,13 +510,13 @@ def run_pipeline_kfp(timeout: int = 900) -> dict:
 
     try:
         mlflow.set_tracking_uri(os.environ["MLFLOW_TRACKING_URI"])
-        # Query by the kfp_run_id tag that train.py wrote — pinpoints THIS
-        # KFP execution's MLflow run, even if a concurrent training run
+        # Query by the client-side iter_tag we just passed in. Pinpoints
+        # THIS submission's MLflow run, even if a concurrent training run
         # (another autoresearch loop, manual `make repro`, CI build, retry)
-        # landed in the same experiment moments later.
+        # lands in the same experiment moments later.
         runs = mlflow.search_runs(
             experiment_names=["training"],
-            filter_string=f"tags.kfp_run_id = '{run.run_id}'",
+            filter_string=f"tags.kfp_run_id = '{iter_tag}'",
             order_by=["start_time DESC"],
             max_results=1,
         )
@@ -521,16 +534,17 @@ def run_pipeline_kfp(timeout: int = 900) -> dict:
                     "auc": 0.0,
                     "metrics": {},
                     "stderr": (
-                        f"no MLflow run with tag kfp_run_id='{run.run_id}'. "
-                        f"Pipeline-kfp image may be stale (rebuild via CI), "
-                        f"or KFP didn't substitute PIPELINE_JOB_ID_PLACEHOLDER. "
-                        f"Set AUTORESEARCH_ALLOW_LATEST_FALLBACK=1 to opt into "
+                        f"no MLflow run with tag kfp_run_id='{iter_tag}'. "
+                        f"Pipeline-kfp image may not be reading KFP_RUN_ID "
+                        f"env (rebuild via CI), or the train component "
+                        f"didn't propagate the submission arg. Set "
+                        f"AUTORESEARCH_ALLOW_LATEST_FALLBACK=1 to opt into "
                         f"the race-prone latest-run lookup."
                     ),
                 }
             print(
                 "  WARN: no MLflow run with tag kfp_run_id="
-                f"'{run.run_id}' — AUTORESEARCH_ALLOW_LATEST_FALLBACK=1, "
+                f"'{iter_tag}' — AUTORESEARCH_ALLOW_LATEST_FALLBACK=1, "
                 f"falling back to latest run (race-prone)."
             )
             runs = mlflow.search_runs(

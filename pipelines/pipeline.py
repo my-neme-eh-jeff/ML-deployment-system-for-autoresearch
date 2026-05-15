@@ -125,6 +125,7 @@ def evaluate(
 @dsl.pipeline(name="classifier-training-pipeline")
 def classifier_pipeline(
     params_yaml: str,
+    kfp_run_id: str,
     raw_data_gcs_path: str = "gs://customer-churn-dvc-remote/raw/ieee_cis.parquet",
     mlflow_tracking_uri: str = "http://mlflow.mlflow.svc.cluster.local:5000",
 ):
@@ -139,17 +140,19 @@ def classifier_pipeline(
     preprocess_task.set_cpu_request("300m").set_memory_request("1Gi")
     preprocess_task.set_cpu_limit("1").set_memory_limit("3Gi")
 
-    # Pass the KFP run id as a component string parameter (not via
-    # set_env_variable, which doesn't substitute placeholders in KFP v2 —
-    # see kubeflow/pipelines#10155). The train component then puts it on
-    # its subprocess env, and train.py sets it as an MLflow tag so the
-    # autoresearch controller can query MLflow by `tags.kfp_run_id` for
-    # the exact run this KFP execution produced.
+    # `kfp_run_id` here is whatever string the submitter passes in via
+    # `arguments={..., "kfp_run_id": "<uuid>"}`. KFP v2 does NOT substitute
+    # dsl.PIPELINE_JOB_ID_PLACEHOLDER when it's used as a component param
+    # value (only command/arg slots get substituted) — the literal
+    # `{{$.pipeline_job_uuid}}` string showed up in MLflow tags during the
+    # smoke test. So the autoresearch loop generates a UUID client-side
+    # and passes it as a submission argument; train.py uses it as the
+    # MLflow run tag the controller queries by.
     train_task = train(
         params_yaml=params_yaml,
         train_csv=preprocess_task.outputs["train_csv"],
         mlflow_tracking_uri=mlflow_tracking_uri,
-        kfp_run_id=dsl.PIPELINE_JOB_ID_PLACEHOLDER,
+        kfp_run_id=kfp_run_id,
     )
     train_task.set_cpu_request("500m").set_memory_request("1Gi")
     train_task.set_cpu_limit("2").set_memory_limit("4Gi")
