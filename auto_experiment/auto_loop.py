@@ -508,12 +508,30 @@ def run_pipeline_kfp(timeout: int = 900) -> dict:
             max_results=1,
         )
         if runs.empty:
-            # Fallback: very old training images may not set the tag (or KFP
-            # didn't substitute the placeholder for some reason). Fall back
-            # to latest-run-in-experiment with a loud warning so we notice.
+            # Fail closed by default. The whole point of tagging the MLflow
+            # run with the KFP run id is to NOT race on "latest by start_time"
+            # — falling back to that silently turns this safety mechanism into
+            # decorative comments. If we genuinely need the fallback (e.g. an
+            # old pipeline-kfp image is in flight that doesn't tag), opt in
+            # explicitly via env.
+            allow_fallback = os.environ.get("AUTORESEARCH_ALLOW_LATEST_FALLBACK") == "1"
+            if not allow_fallback:
+                return {
+                    "success": False,
+                    "auc": 0.0,
+                    "metrics": {},
+                    "stderr": (
+                        f"no MLflow run with tag kfp_run_id='{run.run_id}'. "
+                        f"Pipeline-kfp image may be stale (rebuild via CI), "
+                        f"or KFP didn't substitute PIPELINE_JOB_ID_PLACEHOLDER. "
+                        f"Set AUTORESEARCH_ALLOW_LATEST_FALLBACK=1 to opt into "
+                        f"the race-prone latest-run lookup."
+                    ),
+                }
             print(
                 "  WARN: no MLflow run with tag kfp_run_id="
-                f"'{run.run_id}' — falling back to latest run (race-prone)."
+                f"'{run.run_id}' — AUTORESEARCH_ALLOW_LATEST_FALLBACK=1, "
+                f"falling back to latest run (race-prone)."
             )
             runs = mlflow.search_runs(
                 experiment_names=["training"],
@@ -622,6 +640,42 @@ def _revert_mlflow_champion(prev_version: str | None) -> None:
         print(f"  ↩ Reverted @champion → v{prev_version}")
     except Exception as e:
         print(f"  WARN: failed to revert @champion to v{prev_version}: {e}")
+
+
+def _rewrite_last_history_row_to_failed(reason: str) -> None:
+    """Mutate the last history.tsv row in place: outcome `improved` → `failed`.
+
+    The loop writes the `improved` row BEFORE the commit / PR-merge wait so
+    history.tsv goes into the PR. If the PR doesn't merge, we roll back
+    files + @champion but the local in-memory state would still show
+    `improved` in history.tsv, which the next iter's Claude prompt then
+    inherits as if the change actually shipped. This rewrites the last
+    row so the loop's memory matches what actually landed on main.
+    """
+    try:
+        if not HISTORY_PATH.exists():
+            return
+        lines = HISTORY_PATH.read_text().splitlines()
+        # First line is the header; need at least one data row to rewrite.
+        if len(lines) < 2:
+            return
+        last = lines[-1]
+        cols = last.split("\t")
+        # Schema: ts, exp_num, name, change_type, auc_before, auc_after,
+        # delta, outcome, in_tok, out_tok, cost, rationale (11+).
+        if len(cols) < 8 or cols[7] != "improved":
+            return
+        cols[7] = "failed"
+        # Append the rollback reason to the rationale (last column).
+        if cols[-1]:
+            cols[-1] = f"{cols[-1]} [rolled back: {reason}]"
+        else:
+            cols[-1] = f"[rolled back: {reason}]"
+        lines[-1] = "\t".join(cols)
+        HISTORY_PATH.write_text("\n".join(lines) + "\n")
+        print("  ↩ Rewrote last history.tsv row improved → failed")
+    except Exception as e:
+        print(f"  WARN: failed to rewrite history.tsv last row: {e}")
 
 
 def open_iter_pr_with_auto_merge(
@@ -1060,6 +1114,7 @@ def run_loop(
                 )
                 revert_files(originals)
                 _revert_mlflow_champion(prev_champion_version)
+                _rewrite_last_history_row_to_failed(reason)
                 log_to_mlflow(
                     i, proposal, pipeline_result, best_auc, False, usage=usage
                 )

@@ -51,6 +51,7 @@ def train(
     params_yaml: str,
     train_csv: dsl.Input[dsl.Dataset],
     mlflow_tracking_uri: str,
+    kfp_run_id: str,
     model_artifact: dsl.Output[dsl.Model],
     run_id_artifact: dsl.Output[dsl.Artifact],
 ):
@@ -66,14 +67,16 @@ def train(
     (workdir / "data" / "processed").mkdir(parents=True, exist_ok=True)
     shutil.copy(train_csv.path, workdir / "data" / "processed" / "train.csv")
 
-    # Pass the KFP placeholder for run-id through to train.py via env so
-    # the MLflow run gets tagged with `kfp_run_id`. The autoresearch loop
-    # queries by this tag, sidestepping the race where the latest MLflow
-    # run isn't actually the one this KFP pipeline just produced.
+    # `kfp_run_id` is the resolved value of dsl.PIPELINE_JOB_ID_PLACEHOLDER
+    # that the pipeline DAG passes in — KFP substitutes the placeholder at
+    # runtime before the component starts. Previously we tried set_env_variable
+    # with the placeholder constant; KFP v2 doesn't substitute env-var values
+    # the same way (see kubeflow/pipelines#10155), so the loop's tag-based
+    # MLflow lookup always missed and silently fell back to "latest run".
     env = {
         **os.environ,
         "MLFLOW_TRACKING_URI": mlflow_tracking_uri,
-        "KFP_RUN_ID": os.environ.get("KFP_RUN_ID", ""),
+        "KFP_RUN_ID": kfp_run_id,
     }
     subprocess.run(["python", "-m", "src.train"], cwd=str(workdir), check=True, env=env)
 
@@ -136,17 +139,20 @@ def classifier_pipeline(
     preprocess_task.set_cpu_request("300m").set_memory_request("1Gi")
     preprocess_task.set_cpu_limit("1").set_memory_limit("3Gi")
 
+    # Pass the KFP run id as a component string parameter (not via
+    # set_env_variable, which doesn't substitute placeholders in KFP v2 —
+    # see kubeflow/pipelines#10155). The train component then puts it on
+    # its subprocess env, and train.py sets it as an MLflow tag so the
+    # autoresearch controller can query MLflow by `tags.kfp_run_id` for
+    # the exact run this KFP execution produced.
     train_task = train(
         params_yaml=params_yaml,
         train_csv=preprocess_task.outputs["train_csv"],
         mlflow_tracking_uri=mlflow_tracking_uri,
+        kfp_run_id=dsl.PIPELINE_JOB_ID_PLACEHOLDER,
     )
     train_task.set_cpu_request("500m").set_memory_request("1Gi")
     train_task.set_cpu_limit("2").set_memory_limit("4Gi")
-    # Inject the KFP run id into the train component's env so the MLflow
-    # run gets tagged with `kfp_run_id`. The autoresearch loop searches by
-    # this tag instead of "latest run in experiment" — see auto_loop.py.
-    train_task.set_env_variable("KFP_RUN_ID", dsl.PIPELINE_JOB_ID_PLACEHOLDER)
 
     evaluate_task = evaluate(
         params_yaml=params_yaml,

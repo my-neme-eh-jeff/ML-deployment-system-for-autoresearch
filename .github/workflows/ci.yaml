@@ -206,16 +206,32 @@ jobs:
       - name: Update deployment image tag and push
         if: steps.changes.outputs.api == 'true'
         run: |
+          set -e
           sed -i "s|image: ghcr.io/.*/inference-api:.*|image: ghcr.io/${{ github.repository_owner }}/inference-api:${{ github.sha }}|" k8s/deployment.yaml
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add k8s/deployment.yaml
-          git diff --cached --quiet && exit 0
+          git diff --cached --quiet && { echo "no SHA change to commit"; exit 0; }
           git commit -m "ci: update inference-api image to ${{ github.sha }} [skip ci]"
-          # Race-safe: another CI run might have updated main between our
-          # checkout and now. Pull-rebase and retry once before giving up.
-          git pull --rebase origin main || true
-          git push || (sleep 5 && git pull --rebase origin main && git push)
+          # Race-safe push w/ stash-protected rebase.
+          # Earlier earlier-build steps (docker buildx, gha-creds files) leave
+          # untracked + modified files in the workspace. Without `git stash`,
+          # the rebase fallback dies with
+          # `cannot pull with rebase: You have unstaged changes` and the push
+          # is silently lost. Stash unstaged changes before the rebase, pop
+          # them back after.
+          push_with_retry() {
+            for attempt in 1 2 3; do
+              if git push; then return 0; fi
+              echo "push attempt $attempt failed; stashing + rebasing + retrying"
+              git stash push -u -m "ci-sha-bump-rebase" >/dev/null 2>&1 || true
+              git pull --rebase origin main || true
+              git stash pop >/dev/null 2>&1 || true
+              sleep $((attempt * 3))
+            done
+            return 1
+          }
+          push_with_retry
 
   compile-kfp:
     runs-on: ubuntu-latest

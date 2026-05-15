@@ -67,6 +67,8 @@ components:
             schemaTitle: system.Dataset
             schemaVersion: 0.0.1
       parameters:
+        kfp_run_id:
+          parameterType: STRING
         mlflow_tracking_uri:
           parameterType: STRING
         params_yaml:
@@ -218,26 +220,26 @@ deploymentSpec:
           '
         - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
           \ *\n\ndef train(\n    params_yaml: str,\n    train_csv: dsl.Input[dsl.Dataset],\n\
-          \    mlflow_tracking_uri: str,\n    model_artifact: dsl.Output[dsl.Model],\n\
-          \    run_id_artifact: dsl.Output[dsl.Artifact],\n):\n    import os\n   \
-          \ import shutil\n    import subprocess\n    from pathlib import Path\n\n\
-          \    workdir = Path(\"/app\")\n    (workdir / \"configs\").mkdir(parents=True,\
-          \ exist_ok=True)\n    (workdir / \"configs\" / \"params.yaml\").write_text(params_yaml)\n\
-          \n    (workdir / \"data\" / \"processed\").mkdir(parents=True, exist_ok=True)\n\
-          \    shutil.copy(train_csv.path, workdir / \"data\" / \"processed\" / \"\
-          train.csv\")\n\n    # Pass the KFP placeholder for run-id through to train.py\
-          \ via env so\n    # the MLflow run gets tagged with `kfp_run_id`. The autoresearch\
-          \ loop\n    # queries by this tag, sidestepping the race where the latest\
-          \ MLflow\n    # run isn't actually the one this KFP pipeline just produced.\n\
-          \    env = {\n        **os.environ,\n        \"MLFLOW_TRACKING_URI\": mlflow_tracking_uri,\n\
-          \        \"KFP_RUN_ID\": os.environ.get(\"KFP_RUN_ID\", \"\"),\n    }\n\
-          \    subprocess.run([\"python\", \"-m\", \"src.train\"], cwd=str(workdir),\
+          \    mlflow_tracking_uri: str,\n    kfp_run_id: str,\n    model_artifact:\
+          \ dsl.Output[dsl.Model],\n    run_id_artifact: dsl.Output[dsl.Artifact],\n\
+          ):\n    import os\n    import shutil\n    import subprocess\n    from pathlib\
+          \ import Path\n\n    workdir = Path(\"/app\")\n    (workdir / \"configs\"\
+          ).mkdir(parents=True, exist_ok=True)\n    (workdir / \"configs\" / \"params.yaml\"\
+          ).write_text(params_yaml)\n\n    (workdir / \"data\" / \"processed\").mkdir(parents=True,\
+          \ exist_ok=True)\n    shutil.copy(train_csv.path, workdir / \"data\" / \"\
+          processed\" / \"train.csv\")\n\n    # `kfp_run_id` is the resolved value\
+          \ of dsl.PIPELINE_JOB_ID_PLACEHOLDER\n    # that the pipeline DAG passes\
+          \ in \u2014 KFP substitutes the placeholder at\n    # runtime before the\
+          \ component starts. Previously we tried set_env_variable\n    # with the\
+          \ placeholder constant; KFP v2 doesn't substitute env-var values\n    #\
+          \ the same way (see kubeflow/pipelines#10155), so the loop's tag-based\n\
+          \    # MLflow lookup always missed and silently fell back to \"latest run\"\
+          .\n    env = {\n        **os.environ,\n        \"MLFLOW_TRACKING_URI\":\
+          \ mlflow_tracking_uri,\n        \"KFP_RUN_ID\": kfp_run_id,\n    }\n   \
+          \ subprocess.run([\"python\", \"-m\", \"src.train\"], cwd=str(workdir),\
           \ check=True, env=env)\n\n    shutil.copy(workdir / \"models\" / \"classifier.pkl\"\
           , model_artifact.path)\n    shutil.copy(workdir / \"models\" / \"run_id.txt\"\
           , run_id_artifact.path)\n\n"
-        env:
-        - name: KFP_RUN_ID
-          value: '{{$.pipeline_job_uuid}}'
         image: ghcr.io/my-neme-eh-jeff/pipeline-kfp:latest
         resources:
           cpuLimit: 2.0
@@ -311,6 +313,9 @@ root:
                 outputArtifactKey: train_csv
                 producerTask: preprocess
           parameters:
+            kfp_run_id:
+              runtimeValue:
+                constant: '{{$.pipeline_job_uuid}}'
             mlflow_tracking_uri:
               componentInputParameter: mlflow_tracking_uri
             params_yaml:
