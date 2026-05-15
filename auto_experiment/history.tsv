@@ -1,1 +1,2 @@
 timestamp	exp_num	experiment_name	change_type	auc_before	auc_after	delta	outcome	input_tokens	output_tokens	cost_usd	rationale
+2026-05-15T12:59	1	random_forest_expanded_features	params_only	0.0000	0.9284	+0.9284	improved	6558	945	0.0338	The current baseline uses only a single numeric feature (TransactionAmt) and one categorical feature (ProductCD) with a 
