@@ -21,14 +21,14 @@ spec:
       # MLflow at startup, so users see the latest model within the rollout
       # window without any image rebuild.
       annotations:
-        mlops/classifier-version: "4"
-        mlops/classifier-run-id: "ad33c10eb7794140bc55e81e702e5ad3"
+        mlops/classifier-version: "5"
+        mlops/classifier-run-id: "69d309ac56ad4b8790e2f1a5f88028f1"
     spec:
       serviceAccountName: inference-api-sa
       containers:
         - name: inference-api
           # CI rewrites this image SHA on every push to main.
-          image: ghcr.io/my-neme-eh-jeff/inference-api:2bbf07bea3e09aa47e30f46389d4a22d8f118c66
+          image: ghcr.io/my-neme-eh-jeff/inference-api:75d80f2f72fab9f714f08844f5b1568147c8cb67
           imagePullPolicy: Always
           ports:
             - containerPort: 8000

@@ -1,5 +1,6 @@
 """Train a binary classifier — schema and hyperparameters from configs/params.yaml."""
 
+import os
 import pickle
 from functools import partial
 from pathlib import Path
@@ -21,10 +22,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import FunctionTransformer, OneHotEncoder, StandardScaler
 from sklearn.tree import DecisionTreeClassifier
 
-try:
-    from src.features import apply_feature_engineering, derived_numeric_features
-except ImportError:
-    from features import apply_feature_engineering, derived_numeric_features
+from src.features import apply_feature_engineering, derived_numeric_features
 
 MODEL_NAME = "classifier"
 EXPERIMENT_NAME = "training"
@@ -202,6 +200,14 @@ def train(
 
     mlflow.set_experiment(EXPERIMENT_NAME)
     with mlflow.start_run(run_name="train") as run:
+        # Tag the run with the KFP run id (when running inside a KFP pod) so
+        # the autoresearch loop can fetch *this exact run's* metrics by tag
+        # instead of grabbing the latest run in the experiment — the latter
+        # races with concurrent training (other autoresearch jobs, manual
+        # `make repro`, CI builds, retries).
+        kfp_run_id = os.environ.get("KFP_RUN_ID")
+        if kfp_run_id:
+            mlflow.set_tag("kfp_run_id", kfp_run_id)
         mlflow.log_params({k: v for k, v in params.items() if v is not None})
         mlflow.log_param("n_features", X.shape[1])
         mlflow.log_param("n_train_samples", X.shape[0])

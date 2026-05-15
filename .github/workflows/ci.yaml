@@ -80,6 +80,8 @@ jobs:
               - 'Dockerfile.kfp'
               - 'src/**'
               - 'configs/**'
+              - 'pyproject.toml'
+              - 'uv.lock'
             autoresearch:
               - 'Dockerfile.autoresearch'
               - 'auto_experiment/**'
@@ -87,6 +89,8 @@ jobs:
               - 'configs/**'
               - 'pipelines/**'
               - '.dvc/**'
+              - 'pyproject.toml'
+              - 'uv.lock'
               - 'dvc.yaml'
               - 'dvc.lock'
               - 'data/**'
@@ -103,11 +107,16 @@ jobs:
         run: uv python install 3.12
 
       - name: Install dependencies
-        if: steps.changes.outputs.training == 'true'
-        run: uv sync
+        if: steps.changes.outputs.training == 'true' || steps.changes.outputs.api == 'true'
+        run: uv sync --no-dev
 
-      - name: Authenticate to GCS (Workload Identity Federation)
-        if: steps.changes.outputs.training == 'true'
+      # Auth to GCP via Workload Identity Federation. Needed by:
+      # - `Pull data from DVC` (GCS read on the dvc remote)  → gated below
+      # - `Open inference-image-bump PR (auto-merge)`        → fetches the
+      #   GitHub App PEM from Secret Manager. So we trigger auth on
+      #   `api OR training`, not just training.
+      - name: Authenticate to GCP (Workload Identity Federation)
+        if: steps.changes.outputs.training == 'true' || steps.changes.outputs.api == 'true'
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: projects/399695368426/locations/global/workloadIdentityPools/github-pool/providers/github-provider
@@ -197,21 +206,33 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/autoresearch-loop:${{ github.sha }}
             ghcr.io/${{ github.repository_owner }}/autoresearch-loop:latest
 
-      # Only bump deployment.yaml when the inference image actually rebuilt;
-      # ArgoCD will reconcile other k8s/ changes on its own.
-      - name: Update deployment image tag and push
+      # Open a GitHub-App-signed PR that pins the new image SHA in
+      # k8s/deployment.yaml — same machinery the autoresearch loop uses for
+      # its per-iter PRs. We deliberately go through a PR (not a direct push)
+      # because main is protected by required status checks; a [skip ci]
+      # direct push hits GH006 ("required checks expected"). The PR triggers
+      # a fresh CI run, those checks pass, auto-merge fires, ArgoCD
+      # reconciles. See scripts/ci_open_image_bump_pr.py for details.
+      #
+      # This path is for INFERENCE IMAGE bumps only — i.e. when api-affecting
+      # code (`src/api.py`, Dockerfile, pyproject.toml, uv.lock) changed.
+      # Autoresearch model-promotion PRs are a separate flow with a separate
+      # branch prefix (`auto/run-…` vs `ci/image-bump-…`).
+      - name: Open inference-image-bump PR (auto-merge)
         if: steps.changes.outputs.api == 'true'
-        run: |
-          sed -i "s|image: ghcr.io/.*/inference-api:.*|image: ghcr.io/${{ github.repository_owner }}/inference-api:${{ github.sha }}|" k8s/deployment.yaml
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add k8s/deployment.yaml
-          git diff --cached --quiet && exit 0
-          git commit -m "ci: update inference-api image to ${{ github.sha }} [skip ci]"
-          # Race-safe: another CI run might have updated main between our
-          # checkout and now. Pull-rebase and retry once before giving up.
-          git pull --rebase origin main || true
-          git push || (sleep 5 && git pull --rebase origin main && git push)
+        env:
+          IMAGE_SHA: ${{ github.sha }}
+          GH_OWNER: ${{ github.repository_owner }}
+          GH_REPO: ${{ github.event.repository.name }}
+          GH_APP_ID: ${{ secrets.GH_APP_ID }}
+          GH_INSTALLATION_ID: ${{ secrets.GH_INSTALLATION_ID }}
+          GH_PEM_SECRET_PROJECT: ${{ secrets.GH_PEM_SECRET_PROJECT }}
+          GH_PEM_SECRET_NAME: ${{ secrets.GH_PEM_SECRET_NAME }}
+          # `auto_experiment` is a top-level package in the repo (not an
+          # installed pip package). Put the repo root on PYTHONPATH so
+          # the script's `from auto_experiment import github_commit` works.
+          PYTHONPATH: ${{ github.workspace }}
+        run: uv run python scripts/ci_open_image_bump_pr.py
 
   compile-kfp:
     runs-on: ubuntu-latest

@@ -5,6 +5,7 @@ import csv
 import json
 import os
 import random
+import re
 import subprocess
 import sys
 import time
@@ -445,11 +446,24 @@ def run_pipeline_kfp(timeout: int = 900) -> dict:
     submit_attempts = 3
     run = None
     last_submit_err: Exception | None = None
+    # Generate a UUID client-side and pass it to the train component as the
+    # MLflow tag value. We don't use dsl.PIPELINE_JOB_ID_PLACEHOLDER because
+    # KFP v2 only substitutes that placeholder in command/arg slots, not in
+    # component parameter values — the literal `{{$.pipeline_job_uuid}}`
+    # string ended up as the tag during smoke-testing. Going client-side
+    # decouples us from that quirk; the trade-off is the tag isn't equal to
+    # KFP's run.run_id, but it's still unique and locatable.
+    import uuid as _uuid
+
+    iter_tag = _uuid.uuid4().hex
     for attempt in range(submit_attempts):
         try:
             run = kfp.create_run_from_pipeline_package(
                 str(pipeline_yaml),
-                arguments={"params_yaml": params_yaml_content},
+                arguments={
+                    "params_yaml": params_yaml_content,
+                    "kfp_run_id": iter_tag,
+                },
                 run_name=f"autoresearch-{int(time.time())}",
             )
             break
@@ -496,11 +510,48 @@ def run_pipeline_kfp(timeout: int = 900) -> dict:
 
     try:
         mlflow.set_tracking_uri(os.environ["MLFLOW_TRACKING_URI"])
+        # Query by the client-side iter_tag we just passed in. Pinpoints
+        # THIS submission's MLflow run, even if a concurrent training run
+        # (another autoresearch loop, manual `make repro`, CI build, retry)
+        # lands in the same experiment moments later.
         runs = mlflow.search_runs(
             experiment_names=["training"],
+            filter_string=f"tags.kfp_run_id = '{iter_tag}'",
             order_by=["start_time DESC"],
             max_results=1,
         )
+        if runs.empty:
+            # Fail closed by default. The whole point of tagging the MLflow
+            # run with the KFP run id is to NOT race on "latest by start_time"
+            # — falling back to that silently turns this safety mechanism into
+            # decorative comments. If we genuinely need the fallback (e.g. an
+            # old pipeline-kfp image is in flight that doesn't tag), opt in
+            # explicitly via env.
+            allow_fallback = os.environ.get("AUTORESEARCH_ALLOW_LATEST_FALLBACK") == "1"
+            if not allow_fallback:
+                return {
+                    "success": False,
+                    "auc": 0.0,
+                    "metrics": {},
+                    "stderr": (
+                        f"no MLflow run with tag kfp_run_id='{iter_tag}'. "
+                        f"Pipeline-kfp image may not be reading KFP_RUN_ID "
+                        f"env (rebuild via CI), or the train component "
+                        f"didn't propagate the submission arg. Set "
+                        f"AUTORESEARCH_ALLOW_LATEST_FALLBACK=1 to opt into "
+                        f"the race-prone latest-run lookup."
+                    ),
+                }
+            print(
+                "  WARN: no MLflow run with tag kfp_run_id="
+                f"'{iter_tag}' — AUTORESEARCH_ALLOW_LATEST_FALLBACK=1, "
+                f"falling back to latest run (race-prone)."
+            )
+            runs = mlflow.search_runs(
+                experiment_names=["training"],
+                order_by=["start_time DESC"],
+                max_results=1,
+            )
         if runs.empty:
             return {
                 "success": False,
@@ -573,6 +624,88 @@ def _read_champion_version(mlflow_run_id: str) -> tuple[str, str]:
     return str(champ.version), str(champ.run_id)
 
 
+def _get_champion_version() -> str | None:
+    """Return the version-string of the current @champion, or None if unset."""
+    try:
+        mlflow.set_tracking_uri(os.environ["MLFLOW_TRACKING_URI"])
+        client = mlflow.MlflowClient()
+        v = client.get_model_version_by_alias("classifier", "champion")
+        return str(v.version)
+    except Exception:
+        return None
+
+
+def _revert_mlflow_champion(prev_version: str | None) -> None:
+    """Roll @champion back to `prev_version`.
+
+    Used when an iter trained a new version + promoted it via evaluate.py,
+    but the PR carrying the deployment.yaml annotation never merged. Without
+    this, MLflow records the new version as @champion while the deployed
+    pods still serve the previous one — the loop's view of "what's live"
+    diverges from the cluster.
+    """
+    if not prev_version:
+        print("  WARN: no previous @champion to revert to (registry was empty)")
+        return
+    try:
+        mlflow.set_tracking_uri(os.environ["MLFLOW_TRACKING_URI"])
+        client = mlflow.MlflowClient()
+        client.set_registered_model_alias("classifier", "champion", prev_version)
+        print(f"  ↩ Reverted @champion → v{prev_version}")
+    except Exception as e:
+        print(f"  WARN: failed to revert @champion to v{prev_version}: {e}")
+
+
+def _slugify_branch_segment(name: str) -> str:
+    """Reduce an LLM-supplied experiment name to a git-ref-safe segment.
+
+    Git ref-format rejects spaces, `..`, `~`, `^`, `:`, `?`, `*`, `[`, `\\`,
+    control chars, and trailing dots. Anything outside `[A-Za-z0-9._-]` is
+    collapsed to a single hyphen; leading/trailing punctuation is stripped;
+    the result is capped at 30 chars. Empty after sanitization falls back
+    to `"iter"` so we always return a usable segment.
+    """
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", name or "")
+    slug = slug.strip("-._")[:30]
+    return slug or "iter"
+
+
+def _rewrite_last_history_row_to_failed(reason: str) -> None:
+    """Mutate the last history.tsv row in place: outcome `improved` → `failed`.
+
+    The loop writes the `improved` row BEFORE the commit / PR-merge wait so
+    history.tsv goes into the PR. If the PR doesn't merge, we roll back
+    files + @champion but the local in-memory state would still show
+    `improved` in history.tsv, which the next iter's Claude prompt then
+    inherits as if the change actually shipped. This rewrites the last
+    row so the loop's memory matches what actually landed on main.
+    """
+    try:
+        if not HISTORY_PATH.exists():
+            return
+        lines = HISTORY_PATH.read_text().splitlines()
+        # First line is the header; need at least one data row to rewrite.
+        if len(lines) < 2:
+            return
+        last = lines[-1]
+        cols = last.split("\t")
+        # Schema: ts, exp_num, name, change_type, auc_before, auc_after,
+        # delta, outcome, in_tok, out_tok, cost, rationale (11+).
+        if len(cols) < 8 or cols[7] != "improved":
+            return
+        cols[7] = "failed"
+        # Append the rollback reason to the rationale (last column).
+        if cols[-1]:
+            cols[-1] = f"{cols[-1]} [rolled back: {reason}]"
+        else:
+            cols[-1] = f"[rolled back: {reason}]"
+        lines[-1] = "\t".join(cols)
+        HISTORY_PATH.write_text("\n".join(lines) + "\n")
+        print("  ↩ Rewrote last history.tsv row improved → failed")
+    except Exception as e:
+        print(f"  WARN: failed to rewrite history.tsv last row: {e}")
+
+
 def open_iter_pr_with_auto_merge(
     proposal: dict,
     old_auc: float,
@@ -603,7 +736,9 @@ def open_iter_pr_with_auto_merge(
 
     # Per-iter branch off the *current* main HEAD. Picks up any [skip ci]
     # commits CI pushed back from the previous iter's merge.
-    iter_branch = f"auto/run-{run_id}-iter-{iter_num:02d}-{name[:30]}"
+    iter_branch = (
+        f"auto/run-{run_id}-iter-{iter_num:02d}-{_slugify_branch_segment(name)}"
+    )
     github_commit.create_branch_from_main(
         token, gh_config["owner"], gh_config["repo"], iter_branch
     )
@@ -692,6 +827,68 @@ def commit_improvement(
 # ── MLflow logging ────────────────────────────────────────────────────────────
 
 
+# Patterns for redacting anything that looks like a secret before we log it
+# to MLflow. The MLflow UI is public (audit-acked portfolio scope), so any
+# generated source, error text, or rationale that happens to contain an env
+# var assignment, API key, or PEM body would become a public artifact. The
+# regexes target the obvious-shape leaks; sophisticated leaks need a real
+# secret scanner.
+_SECRET_PATTERNS = [
+    # AWS/GCP/GitHub/Anthropic-style key=value with quoted or bare values.
+    (
+        re.compile(
+            r"(?i)\b("
+            r"AWS_(?:ACCESS_KEY_ID|SECRET_ACCESS_KEY|SESSION_TOKEN)"
+            r"|GH(?:E)?_TOKEN|GITHUB_TOKEN|GITHUB_PAT_TOKEN"
+            r"|ANTHROPIC_API_KEY|OPENAI_API_KEY"
+            r"|GCP_SERVICE_ACCOUNT_KEY|GOOGLE_API_KEY"
+            r"|MLFLOW_TRACKING_PASSWORD|DATABASE_URL|DB_PASSWORD"
+            r")\s*[=:]\s*\S+"
+        ),
+        r"\1=[REDACTED]",
+    ),
+    # PEM blocks (private keys).
+    (
+        re.compile(
+            r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----.*?"
+            r"-----END (?:RSA |EC |OPENSSH )?PRIVATE KEY-----",
+            re.DOTALL,
+        ),
+        "[REDACTED-PEM]",
+    ),
+    # Bearer tokens in HTTP headers / error text.
+    (
+        re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._\-]+"),
+        "Bearer [REDACTED]",
+    ),
+    # Anthropic key shape (sk-ant-...).
+    (
+        re.compile(r"\bsk-ant-[A-Za-z0-9_\-]{20,}"),
+        "[REDACTED-ANTHROPIC-KEY]",
+    ),
+    # GitHub App PEM may not match the block regex if newlines are stripped;
+    # catch the begin/end markers separately.
+    (
+        re.compile(r"-----(?:BEGIN|END)[ A-Z]*PRIVATE KEY-----"),
+        "[REDACTED-PEM-MARKER]",
+    ),
+]
+
+
+def _redact_secrets(text: str | None) -> str:
+    """Return `text` with obvious-shape secret patterns replaced.
+
+    Always returns a string (treats None as empty) so callers can pass it
+    straight to mlflow.log_text / set_tag without further guards.
+    """
+    if not text:
+        return ""
+    out = text
+    for pattern, replacement in _SECRET_PATTERNS:
+        out = pattern.sub(replacement, out)
+    return out
+
+
 def log_to_mlflow(
     exp_num: int,
     proposal: dict,
@@ -720,7 +917,7 @@ def log_to_mlflow(
                 "outcome": outcome,
             }
         )
-        mlflow.log_text(proposal.get("rationale", ""), "rationale.txt")
+        mlflow.log_text(_redact_secrets(proposal.get("rationale", "")), "rationale.txt")
 
         auc_after = pipeline_result["auc"]
         mlflow.log_metric("auc_roc_before", auc_before)
@@ -735,12 +932,19 @@ def log_to_mlflow(
                 mlflow.set_tag("claude_model", usage["model"])
 
         # Log every attempted file, even reverted ones, for the audit trail.
+        # Redact obvious secrets first — the LLM has the project context but
+        # may regenerate sample values that look like keys, or echo error
+        # text containing tokens. MLflow UI is public per portfolio scope.
         if proposal.get("params_yaml"):
-            mlflow.log_text(proposal["params_yaml"], "attempted/params.yaml")
+            mlflow.log_text(
+                _redact_secrets(proposal["params_yaml"]), "attempted/params.yaml"
+            )
         if proposal.get("train_py"):
-            mlflow.log_text(proposal["train_py"], "attempted/train.py")
+            mlflow.log_text(_redact_secrets(proposal["train_py"]), "attempted/train.py")
         if proposal.get("preprocess_py"):
-            mlflow.log_text(proposal["preprocess_py"], "attempted/preprocess.py")
+            mlflow.log_text(
+                _redact_secrets(proposal["preprocess_py"]), "attempted/preprocess.py"
+            )
 
         if pipeline_result["success"]:
             run_id_file = PROJECT_ROOT / "models" / "run_id.txt"
@@ -748,7 +952,7 @@ def log_to_mlflow(
                 mlflow.set_tag("linked_train_run_id", run_id_file.read_text().strip())
 
         if error_msg:
-            mlflow.set_tag("error", error_msg[:500])
+            mlflow.set_tag("error", _redact_secrets(error_msg)[:500])
 
         for metric_name, val in pipeline_result.get("metrics", {}).items():
             if isinstance(val, (int, float)) and not isinstance(val, bool):
@@ -898,6 +1102,12 @@ def run_loop(
         apply_changes(proposal)
         ruff_fix(proposal)
 
+        # Snapshot the registry's current @champion version BEFORE this iter
+        # trains anything. If evaluate.py promotes a new version but the PR
+        # carrying the deployment.yaml annotation never merges, we use this
+        # to roll @champion back so MLflow and the deployed pod stay coherent.
+        prev_champion_version = _get_champion_version()
+
         print(f"[{i}/{n_experiments}] Running pipeline...")
         pipeline_result = run_pipeline(timeout=KFP_TIMEOUT_SECONDS)
 
@@ -932,6 +1142,8 @@ def run_loop(
             print(f"  ✓ IMPROVED: {best_auc:.4f} → {new_auc:.4f} (+{delta:.4f})")
             # log_to_tsv must run before commit so history.tsv is in the commit.
             log_to_tsv(i, proposal, pipeline_result, best_auc, "improved", usage=usage)
+            pr_merged = False
+            pr_err: str | None = None
             try:
                 pr_url = commit_improvement(
                     proposal,
@@ -962,7 +1174,7 @@ def run_loop(
                             gh_config["project"],
                             gh_config["secret"],
                         )
-                        merged = github_commit.wait_for_pr_merge(
+                        pr_merged = github_commit.wait_for_pr_merge(
                             token,
                             gh_config["owner"],
                             gh_config["repo"],
@@ -970,10 +1182,38 @@ def run_loop(
                             poll_interval_s=15,
                             timeout_s=600,
                         )
-                        if merged:
+                        if pr_merged:
                             print(f"  ✓ PR #{pr_num} merged.")
+                else:
+                    # No gh_config → the loop is running in a mode where PR
+                    # gating is not applicable (e.g. local dev). Treat as
+                    # merged so we don't roll back local file mutations.
+                    pr_merged = True
             except Exception as e:
-                print(f"  WARN: commit/merge-wait failed ({e}) — continuing loop")
+                pr_err = str(e)
+                print(f"  WARN: commit/merge-wait failed ({e})")
+            if not pr_merged:
+                # PR creation or merge did not complete. Roll back: the model
+                # was promoted to @champion inside evaluate.py before this
+                # branched off, but k8s/deployment.yaml on main never got the
+                # annotation bump (it lives in the unmerged PR). Without a
+                # rollback, MLflow says version vN is @champion but ArgoCD
+                # never rolls pods → pods continue serving the previous
+                # version forever. Mark iter as failed, restore files, and
+                # revert @champion so the cluster state stays coherent.
+                reason = pr_err or "PR did not merge within timeout"
+                print(
+                    f"  ✗ FAILED: improvement detected but PR not merged "
+                    f"({reason}). Reverting local files + MLflow champion."
+                )
+                revert_files(originals)
+                _revert_mlflow_champion(prev_champion_version)
+                _rewrite_last_history_row_to_failed(reason)
+                log_to_mlflow(
+                    i, proposal, pipeline_result, best_auc, False, usage=usage
+                )
+                iters_since_improvement += 1
+                continue
             prev_best = best_auc
             best_auc = new_auc
             log_to_mlflow(i, proposal, pipeline_result, prev_best, True, usage=usage)

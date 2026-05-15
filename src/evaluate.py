@@ -46,7 +46,19 @@ def get_champion_metric() -> float | None:
         ):
             return None
         raise
-    return client.get_run(v.run_id).data.metrics.get(PRIMARY_METRIC)
+    metrics = client.get_run(v.run_id).data.metrics
+    if PRIMARY_METRIC not in metrics:
+        # A champion exists but its run is missing the metric we promote on
+        # (registry corruption, mid-migration, or manual run). Returning None
+        # would let `evaluate()` fall into the "no champion → promote
+        # unconditionally" branch and overwrite a real champion with whatever
+        # the current iter produced. Fail closed instead.
+        raise RuntimeError(
+            f"Champion v{v.version} (run {v.run_id}) is missing required metric "
+            f"{PRIMARY_METRIC!r}; refusing to promote a new version on top of it. "
+            f"Investigate the registry before re-running."
+        )
+    return metrics[PRIMARY_METRIC]
 
 
 def evaluate(

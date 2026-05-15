@@ -1,20 +1,20 @@
 schema: '2.0'
 stages:
   preprocess:
-    cmd: uv run python src/preprocess.py
+    cmd: uv run python -m src.preprocess
     deps:
     - path: configs/params.yaml
       hash: md5
-      md5: 21581ffbf6556ab34592d07ea16d199b
-      size: 986
+      md5: 2a9fc6427a8bc2867d8e016803cb0c85
+      size: 1146
     - path: data/ieee_cis.parquet
       hash: md5
       md5: ba46a18a224f82711e6a91ec8dd45ad2
       size: 29751989
     - path: src/preprocess.py
       hash: md5
-      md5: 01950e3fdd1629672fa19c6b8fd405a7
-      size: 3635
+      md5: 7b11bee10cbfa7792a0be62838c971db
+      size: 3839
     params:
       configs/params.yaml:
         dataset:
@@ -44,7 +44,7 @@ stages:
       md5: 3371e14f582b7082ca39d533e25a23fa
       size: 1593586
   train:
-    cmd: uv run python src/train.py
+    cmd: uv run python -m src.train
     deps:
     - path: data/processed/train.csv
       hash: md5
@@ -56,8 +56,8 @@ stages:
       size: 1502
     - path: src/train.py
       hash: md5
-      md5: 6d59dbe24f5388c31beebd001f612e75
-      size: 7051
+      md5: 6c85b3b5a3d8e8233cb59d9e3a8deb55
+      size: 9052
     params:
       configs/params.yaml:
         dataset:
@@ -86,14 +86,14 @@ stages:
     outs:
     - path: models/classifier.pkl
       hash: md5
-      md5: 147ed0877a933e0f1e209060efdab285
-      size: 429835
+      md5: 0625f317097c219ce40a3034ef382897
+      size: 430829
     - path: models/run_id.txt
       hash: md5
-      md5: 8d8cee63aacb612ff377e9ca6c395858
+      md5: 59b42961bf0b46e3d07affc6a4d4e078
       size: 32
   evaluate:
-    cmd: uv run python src/evaluate.py
+    cmd: uv run python -m src.evaluate
     deps:
     - path: data/processed/test.csv
       hash: md5
@@ -101,16 +101,16 @@ stages:
       size: 398614
     - path: models/classifier.pkl
       hash: md5
-      md5: 147ed0877a933e0f1e209060efdab285
-      size: 429835
+      md5: 0625f317097c219ce40a3034ef382897
+      size: 430829
     - path: models/run_id.txt
       hash: md5
-      md5: 8d8cee63aacb612ff377e9ca6c395858
+      md5: 59b42961bf0b46e3d07affc6a4d4e078
       size: 32
     - path: src/evaluate.py
       hash: md5
-      md5: 8e0d2118e112b0f79f04b8d3d8909412
-      size: 4553
+      md5: 63bac37f71864889c4197bfaa21d1a59
+      size: 6561
     - path: src/features.py
       hash: md5
       md5: 24c90900de30d735a0ffbd462f2f5795
@@ -146,5 +146,5 @@ stages:
     outs:
     - path: metrics.json
       hash: md5
-      md5: 7e1f857f115c51676b2b7a27f5765109
-      size: 103
+      md5: 898d2d376851da8295099082b756a83d
+      size: 123

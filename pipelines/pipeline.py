@@ -39,7 +39,7 @@ def preprocess(
     # parquet OOM'd this pod at the 1 GiB limit, with no traceback).
     gcsfs.GCSFileSystem().get(raw_data_gcs_path, str(workdir / csv_path))
 
-    subprocess.run(["python", "src/preprocess.py"], cwd=str(workdir), check=True)
+    subprocess.run(["python", "-m", "src.preprocess"], cwd=str(workdir), check=True)
 
     shutil.copy(workdir / "data" / "processed" / "train.csv", train_csv.path)
     shutil.copy(workdir / "data" / "processed" / "test.csv", test_csv.path)
@@ -51,6 +51,7 @@ def train(
     params_yaml: str,
     train_csv: dsl.Input[dsl.Dataset],
     mlflow_tracking_uri: str,
+    kfp_run_id: str,
     model_artifact: dsl.Output[dsl.Model],
     run_id_artifact: dsl.Output[dsl.Artifact],
 ):
@@ -66,8 +67,18 @@ def train(
     (workdir / "data" / "processed").mkdir(parents=True, exist_ok=True)
     shutil.copy(train_csv.path, workdir / "data" / "processed" / "train.csv")
 
-    env = {**os.environ, "MLFLOW_TRACKING_URI": mlflow_tracking_uri}
-    subprocess.run(["python", "src/train.py"], cwd=str(workdir), check=True, env=env)
+    # `kfp_run_id` is the resolved value of dsl.PIPELINE_JOB_ID_PLACEHOLDER
+    # that the pipeline DAG passes in — KFP substitutes the placeholder at
+    # runtime before the component starts. Previously we tried set_env_variable
+    # with the placeholder constant; KFP v2 doesn't substitute env-var values
+    # the same way (see kubeflow/pipelines#10155), so the loop's tag-based
+    # MLflow lookup always missed and silently fell back to "latest run".
+    env = {
+        **os.environ,
+        "MLFLOW_TRACKING_URI": mlflow_tracking_uri,
+        "KFP_RUN_ID": kfp_run_id,
+    }
+    subprocess.run(["python", "-m", "src.train"], cwd=str(workdir), check=True, env=env)
 
     shutil.copy(workdir / "models" / "classifier.pkl", model_artifact.path)
     shutil.copy(workdir / "models" / "run_id.txt", run_id_artifact.path)
@@ -99,7 +110,9 @@ def evaluate(
     shutil.copy(run_id_artifact.path, workdir / "models" / "run_id.txt")
 
     env = {**os.environ, "MLFLOW_TRACKING_URI": mlflow_tracking_uri}
-    subprocess.run(["python", "src/evaluate.py"], cwd=str(workdir), check=True, env=env)
+    subprocess.run(
+        ["python", "-m", "src.evaluate"], cwd=str(workdir), check=True, env=env
+    )
 
     shutil.copy(workdir / "metrics.json", metrics.path)
 
@@ -112,6 +125,7 @@ def evaluate(
 @dsl.pipeline(name="classifier-training-pipeline")
 def classifier_pipeline(
     params_yaml: str,
+    kfp_run_id: str,
     raw_data_gcs_path: str = "gs://customer-churn-dvc-remote/raw/ieee_cis.parquet",
     mlflow_tracking_uri: str = "http://mlflow.mlflow.svc.cluster.local:5000",
 ):
@@ -126,10 +140,19 @@ def classifier_pipeline(
     preprocess_task.set_cpu_request("300m").set_memory_request("1Gi")
     preprocess_task.set_cpu_limit("1").set_memory_limit("3Gi")
 
+    # `kfp_run_id` here is whatever string the submitter passes in via
+    # `arguments={..., "kfp_run_id": "<uuid>"}`. KFP v2 does NOT substitute
+    # dsl.PIPELINE_JOB_ID_PLACEHOLDER when it's used as a component param
+    # value (only command/arg slots get substituted) — the literal
+    # `{{$.pipeline_job_uuid}}` string showed up in MLflow tags during the
+    # smoke test. So the autoresearch loop generates a UUID client-side
+    # and passes it as a submission argument; train.py uses it as the
+    # MLflow run tag the controller queries by.
     train_task = train(
         params_yaml=params_yaml,
         train_csv=preprocess_task.outputs["train_csv"],
         mlflow_tracking_uri=mlflow_tracking_uri,
+        kfp_run_id=kfp_run_id,
     )
     train_task.set_cpu_request("500m").set_memory_request("1Gi")
     train_task.set_cpu_limit("2").set_memory_limit("4Gi")

@@ -1,4 +1,11 @@
-"""FastAPI inference server. Loads `@champion` classifier from MLflow."""
+"""FastAPI inference server. Loads `@champion` classifier from MLflow.
+
+Pod loads the current MLflow `@champion` at startup and serves it via
+`/predict`. Annotation bumps on the Deployment template (set by the
+autoresearch loop on each kept iter) drive rolling restarts; each restart
+re-reads `@champion`, so the served model tracks the registry within one
+rollout window without any image rebuild.
+"""
 
 import logging
 import os
@@ -20,7 +27,11 @@ MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5000")
 MODEL_NAME = os.getenv("MODEL_NAME", "classifier")
 MODEL_URI = f"models:/{MODEL_NAME}@champion"
 
-mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+# Note: mlflow.set_tracking_uri() is intentionally NOT called at module
+# import time. Doing so pollutes mlflow's process-global tracking URI for
+# any other code that imports this module (e.g. tests that pre-set
+# MLFLOW_TRACKING_URI to a sqlite path). The loader below sets it just
+# before the first load attempt.
 
 model = None
 model_version: str | None = None
@@ -46,6 +57,9 @@ def _load_model_in_background():
     catches up automatically.
     """
     global model, model_version
+    # Set the tracking URI here (not at module import) so importing this
+    # module doesn't clobber other test/runtime mlflow configuration.
+    mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
     attempt = 0
     while True:
         try:
@@ -119,9 +133,12 @@ def predict(req: PredictRequest):
             list(req.data.keys()),
             e,
         )
+        # Don't echo `e` back to callers — sklearn / pandas error text leaks
+        # column names, dtypes, package versions, and sometimes file paths.
+        # The full exception is in the log line above for ops.
         return JSONResponse(
             status_code=422,
-            content={"error": f"Prediction failed: {e}"},
+            content={"error": "Prediction failed; see server logs."},
         )
     # Per-request attribution: which model version served this prediction,
     # what input shape, what was returned. Lets ops trace any complaint about

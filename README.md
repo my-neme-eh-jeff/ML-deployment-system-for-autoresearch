@@ -18,7 +18,7 @@ A system that improves an ML model on its own.
 ### For technical readers
 
 - A Kubeflow Pipelines run trains and evaluates each candidate on GKE.
-- If AUC beats the current `@champion` alias in MLflow by ≥ `min_improvement` (configurable, default 0.001), the autoresearch loop bumps an annotation in `k8s/` and pushes via a GitHub App.
+- If AUC beats the current `@champion` alias in MLflow by ≥ `min_improvement` (configurable in `configs/params.yaml`, currently 0.003 — roughly one standard error of AUC on a 40K-row test set), the autoresearch loop bumps an annotation in `k8s/` and pushes via a GitHub App.
 - ArgoCD reconciles, the inference Deployment rolls, new pods re-read `models:/classifier@champion` from MLflow at startup.
 - Failed candidates never edit the annotation. The live model can't get worse than the last champion that won.
 - Dataset is plug-and-play through `configs/params.yaml`. No code knows the column names.
@@ -195,6 +195,14 @@ The starting point is deliberately weak: vanilla decision tree on a 2-feature su
 
 ## 🏁 Spin it up
 
+First-time setup is a single interactive wizard — pick cloud, paste in creds, done:
+
+```bash
+make setup                                     # interactive: cloud + tracker + creds → .env
+```
+
+Then the four-command demo flow:
+
 ```bash
 make cluster-wake                              # bring up GKE + CloudSQL + KFP + ArgoCD
 make reset-for-fresh-run                       # baseline classifier@v1 (vanilla DT)
@@ -202,7 +210,7 @@ make autoresearch-run AUTORESEARCH_N=20        # let Claude iterate 20×
 make cluster-sleep                             # tear down to ~$0/day idle
 ```
 
-You'll need a GCP project, an Anthropic API key, and a GitHub App PEM in GCP Secret Manager. Setup commands live in `Makefile` — `make` lists them.
+You'll need a GCP project, an Anthropic API key, and a GitHub App PEM in GCP Secret Manager. The setup wizard prompts for all of these.
 
 For local dev:
 
@@ -277,5 +285,5 @@ Personal portfolio project — not a 5-nines production deployment.
 - Single zone. A zone outage takes everything down.
 - Free-trial GCP credits, so the public IPs are stable per cluster lifetime but not forever.
 - No data-drift monitoring, no auto-retraining triggers. **Autoresearch is the retraining mechanism.**
-  - The autoresearch loop has currently no ```min_iterations_since_improvement``` stop condition for runs once progress has stagnated
+- Stagnation guard: the loop early-stops after `auto_experiment.max_iterations_without_improvement` consecutive non-improving iters (default 10; counts failed pipelines, sub-threshold reverts, and Claude errors).
 - No model-serving benchmarking (TTFT, P99). Separate project.

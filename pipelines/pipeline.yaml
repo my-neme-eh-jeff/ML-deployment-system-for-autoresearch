@@ -2,6 +2,7 @@
 # Name: classifier-training-pipeline
 # Description: Full preprocess → train → evaluate DAG. params_yaml is the entire file content.
 # Inputs:
+#    kfp_run_id: str
 #    mlflow_tracking_uri: str [Default: 'http://mlflow.mlflow.svc.cluster.local:5000']
 #    params_yaml: str
 #    raw_data_gcs_path: str [Default: 'gs://customer-churn-dvc-remote/raw/ieee_cis.parquet']
@@ -67,6 +68,8 @@ components:
             schemaTitle: system.Dataset
             schemaVersion: 0.0.1
       parameters:
+        kfp_run_id:
+          parameterType: STRING
         mlflow_tracking_uri:
           parameterType: STRING
         params_yaml:
@@ -122,12 +125,12 @@ deploymentSpec:
           \ workdir / \"data\" / \"processed\" / \"test.csv\")\n    shutil.copy(model_artifact.path,\
           \ workdir / \"models\" / \"classifier.pkl\")\n    shutil.copy(run_id_artifact.path,\
           \ workdir / \"models\" / \"run_id.txt\")\n\n    env = {**os.environ, \"\
-          MLFLOW_TRACKING_URI\": mlflow_tracking_uri}\n    subprocess.run([\"python\"\
-          , \"src/evaluate.py\"], cwd=str(workdir), check=True, env=env)\n\n    shutil.copy(workdir\
-          \ / \"metrics.json\", metrics.path)\n\n    run_id = (workdir / \"models\"\
-          \ / \"run_id.txt\").read_text().strip()\n    print(f\"MLflow run_id: {run_id}\"\
-          )\n    print(f\"Metrics: {Path(metrics.path).read_text()}\")\n    return\
-          \ run_id\n\n"
+          MLFLOW_TRACKING_URI\": mlflow_tracking_uri}\n    subprocess.run(\n     \
+          \   [\"python\", \"-m\", \"src.evaluate\"], cwd=str(workdir), check=True,\
+          \ env=env\n    )\n\n    shutil.copy(workdir / \"metrics.json\", metrics.path)\n\
+          \n    run_id = (workdir / \"models\" / \"run_id.txt\").read_text().strip()\n\
+          \    print(f\"MLflow run_id: {run_id}\")\n    print(f\"Metrics: {Path(metrics.path).read_text()}\"\
+          )\n    return run_id\n\n"
         image: ghcr.io/my-neme-eh-jeff/pipeline-kfp:latest
         resources:
           cpuLimit: 1.0
@@ -176,9 +179,9 @@ deploymentSpec:
           \ loading the full dataframe\n    # into memory (a pd.read + pd.to_parquet\
           \ round-trip on the 200K-row IEEE-CIS\n    # parquet OOM'd this pod at the\
           \ 1 GiB limit, with no traceback).\n    gcsfs.GCSFileSystem().get(raw_data_gcs_path,\
-          \ str(workdir / csv_path))\n\n    subprocess.run([\"python\", \"src/preprocess.py\"\
-          ], cwd=str(workdir), check=True)\n\n    shutil.copy(workdir / \"data\" /\
-          \ \"processed\" / \"train.csv\", train_csv.path)\n    shutil.copy(workdir\
+          \ str(workdir / csv_path))\n\n    subprocess.run([\"python\", \"-m\", \"\
+          src.preprocess\"], cwd=str(workdir), check=True)\n\n    shutil.copy(workdir\
+          \ / \"data\" / \"processed\" / \"train.csv\", train_csv.path)\n    shutil.copy(workdir\
           \ / \"data\" / \"processed\" / \"test.csv\", test_csv.path)\n    shutil.copy(workdir\
           \ / \"data\" / \"processed\" / \"stats.json\", stats.path)\n\n"
         image: ghcr.io/my-neme-eh-jeff/pipeline-kfp:latest
@@ -218,16 +221,24 @@ deploymentSpec:
           '
         - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
           \ *\n\ndef train(\n    params_yaml: str,\n    train_csv: dsl.Input[dsl.Dataset],\n\
-          \    mlflow_tracking_uri: str,\n    model_artifact: dsl.Output[dsl.Model],\n\
-          \    run_id_artifact: dsl.Output[dsl.Artifact],\n):\n    import os\n   \
-          \ import shutil\n    import subprocess\n    from pathlib import Path\n\n\
-          \    workdir = Path(\"/app\")\n    (workdir / \"configs\").mkdir(parents=True,\
-          \ exist_ok=True)\n    (workdir / \"configs\" / \"params.yaml\").write_text(params_yaml)\n\
-          \n    (workdir / \"data\" / \"processed\").mkdir(parents=True, exist_ok=True)\n\
-          \    shutil.copy(train_csv.path, workdir / \"data\" / \"processed\" / \"\
-          train.csv\")\n\n    env = {**os.environ, \"MLFLOW_TRACKING_URI\": mlflow_tracking_uri}\n\
-          \    subprocess.run([\"python\", \"src/train.py\"], cwd=str(workdir), check=True,\
-          \ env=env)\n\n    shutil.copy(workdir / \"models\" / \"classifier.pkl\"\
+          \    mlflow_tracking_uri: str,\n    kfp_run_id: str,\n    model_artifact:\
+          \ dsl.Output[dsl.Model],\n    run_id_artifact: dsl.Output[dsl.Artifact],\n\
+          ):\n    import os\n    import shutil\n    import subprocess\n    from pathlib\
+          \ import Path\n\n    workdir = Path(\"/app\")\n    (workdir / \"configs\"\
+          ).mkdir(parents=True, exist_ok=True)\n    (workdir / \"configs\" / \"params.yaml\"\
+          ).write_text(params_yaml)\n\n    (workdir / \"data\" / \"processed\").mkdir(parents=True,\
+          \ exist_ok=True)\n    shutil.copy(train_csv.path, workdir / \"data\" / \"\
+          processed\" / \"train.csv\")\n\n    # `kfp_run_id` is the resolved value\
+          \ of dsl.PIPELINE_JOB_ID_PLACEHOLDER\n    # that the pipeline DAG passes\
+          \ in \u2014 KFP substitutes the placeholder at\n    # runtime before the\
+          \ component starts. Previously we tried set_env_variable\n    # with the\
+          \ placeholder constant; KFP v2 doesn't substitute env-var values\n    #\
+          \ the same way (see kubeflow/pipelines#10155), so the loop's tag-based\n\
+          \    # MLflow lookup always missed and silently fell back to \"latest run\"\
+          .\n    env = {\n        **os.environ,\n        \"MLFLOW_TRACKING_URI\":\
+          \ mlflow_tracking_uri,\n        \"KFP_RUN_ID\": kfp_run_id,\n    }\n   \
+          \ subprocess.run([\"python\", \"-m\", \"src.train\"], cwd=str(workdir),\
+          \ check=True, env=env)\n\n    shutil.copy(workdir / \"models\" / \"classifier.pkl\"\
           , model_artifact.path)\n    shutil.copy(workdir / \"models\" / \"run_id.txt\"\
           , run_id_artifact.path)\n\n"
         image: ghcr.io/my-neme-eh-jeff/pipeline-kfp:latest
@@ -303,6 +314,8 @@ root:
                 outputArtifactKey: train_csv
                 producerTask: preprocess
           parameters:
+            kfp_run_id:
+              componentInputParameter: kfp_run_id
             mlflow_tracking_uri:
               componentInputParameter: mlflow_tracking_uri
             params_yaml:
@@ -311,6 +324,8 @@ root:
           name: train
   inputDefinitions:
     parameters:
+      kfp_run_id:
+        parameterType: STRING
       mlflow_tracking_uri:
         defaultValue: http://mlflow.mlflow.svc.cluster.local:5000
         isOptional: true

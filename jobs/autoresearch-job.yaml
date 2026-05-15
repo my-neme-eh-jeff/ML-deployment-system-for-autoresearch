@@ -8,6 +8,11 @@ metadata:
 spec:
   backoffLimit: 0
   ttlSecondsAfterFinished: 3600
+  # Hard cap on wall-clock time so a hung KFP submit or stuck Anthropic call
+  # can't keep the Job alive (and racking up token spend) past the loop's
+  # in-code --hours budget. 7200s = 2h matches the default --hours flag in
+  # `make autoresearch-run`. Adjust both together if you bump the budget.
+  activeDeadlineSeconds: 7200
   template:
     metadata:
       labels:

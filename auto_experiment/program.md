@@ -32,7 +32,7 @@ reverted. Every attempt is logged to MLflow.
 
 **NEVER MODIFY:**
 - `src/evaluate.py` — evaluation + champion/challenger logic
-- `src/features.py` — shared feature-engineering helper used by both train and evaluate. If you add a column-adding feature here, also extend `derived_numeric_features()` so the saved sklearn pipeline expects it.
+- `src/features.py` — feature-engineering helper. **You cannot edit this anyway** — it's not exposed by the loop's tool schema, and the KFP pod runs against the image-baked copy regardless. If you think a derived column would help, request it via the params surface instead (add the source column to `dataset.numeric_features`).
 - `dvc.yaml` — pipeline DAG
 - Output paths: `models/classifier.pkl`, `models/run_id.txt`, `metrics.json`, `data/processed/train.csv`, `data/processed/test.csv`
 - `auto_experiment:` block of `params.yaml`
@@ -48,7 +48,7 @@ reverted. Every attempt is logged to MLflow.
 
 ### Feature space — expand what the model sees
 - Add columns to `dataset.numeric_features` or `dataset.categorical_features` from the catalog in `data/processed/stats.json`.
-- Add interaction features in `src/features.py` (and update `derived_numeric_features()`).
+- (`src/features.py` is not editable from this loop — request derived columns via params or model_type changes instead.)
 
 ### Hyperparameters — tune
 - For trees: `max_depth`, `min_samples_leaf`, `min_samples_split`, `n_estimators`, `max_features`.
@@ -58,7 +58,6 @@ reverted. Every attempt is logged to MLflow.
 
 ### Anti-pattern — don't do these
 - Adding a single feature without expanding the schema in `dataset:` (the column won't reach the ColumnTransformer).
-- Adding a column-adding step in train without updating `features.py` (evaluate will crash on inference).
 - Changing `MODEL_NAME` or `EXPERIMENT_NAME`.
 - Putting **high-cardinality** columns in `categorical_features` with the default OneHotEncoder (e.g. card identifiers, ZIP/area codes, free-text categories with hundreds-to-thousands of unique values). The OHE matrix will exhaust pod memory. Prefer ordinal encoding or target encoding for any column with >100 unique values; or drop it.
 

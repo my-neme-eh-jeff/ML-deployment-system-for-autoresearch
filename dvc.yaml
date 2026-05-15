@@ -1,6 +1,6 @@
 stages:
   preprocess:
-    cmd: uv run python src/preprocess.py
+    cmd: uv run python -m src.preprocess
     deps:
       - data/ieee_cis.parquet
       - src/preprocess.py
@@ -17,7 +17,7 @@ stages:
           cache: false
 
   train:
-    cmd: uv run python src/train.py
+    cmd: uv run python -m src.train
     deps:
       - data/processed/train.csv
       - src/train.py
@@ -31,7 +31,7 @@ stages:
       - models/run_id.txt
 
   evaluate:
-    cmd: uv run python src/evaluate.py
+    cmd: uv run python -m src.evaluate
     deps:
       - data/processed/test.csv
       - models/classifier.pkl

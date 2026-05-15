@@ -17,7 +17,7 @@ repro:
 	MLFLOW_TRACKING_URI=http://localhost:5000 uv run dvc repro
 
 train:
-	MLFLOW_TRACKING_URI=http://localhost:5000 uv run python src/train.py
+	MLFLOW_TRACKING_URI=http://localhost:5000 uv run python -m src.train
 
 serve:
 	MLFLOW_TRACKING_URI=http://localhost:5000 uv run uvicorn src.api:app --reload --port 8000
@@ -38,7 +38,7 @@ mlflow:
 	kubectl port-forward -n mlflow svc/mlflow 5000:5000
 
 promote:
-	MLFLOW_TRACKING_URI=http://localhost:5000 uv run python src/promote.py
+	MLFLOW_TRACKING_URI=http://localhost:5000 uv run python -m src.promote
 
 test:
 	uv run pytest tests/ -v
@@ -72,9 +72,9 @@ auto-experiment:
 # Prerequisite: 'make mlflow' port-forward must be running in another terminal.
 bootstrap:
 	@echo "Step 1/2: Training model and registering in cluster MLflow..."
-	MLFLOW_TRACKING_URI=http://localhost:5000 uv run python src/train.py
+	MLFLOW_TRACKING_URI=http://localhost:5000 uv run python -m src.train
 	@echo "Step 2/2: Evaluating and setting @champion alias..."
-	MLFLOW_TRACKING_URI=http://localhost:5000 uv run python src/evaluate.py
+	MLFLOW_TRACKING_URI=http://localhost:5000 uv run python -m src.evaluate
 	@echo ""
 	@echo "Bootstrap complete. inference-api pods will load @champion on next restart."
 	@echo "Run 'kubectl rollout restart deployment/inference-api -n inference' to trigger now."
@@ -148,33 +148,56 @@ cluster-sleep:
 # Scale workloads back up + start CloudSQL after cluster-sleep.
 # Only scales the components we actually use — see the disabled list above.
 cluster-wake:
-	@echo "Starting CloudSQL instance $(SQL_INSTANCE)..."
-	@gcloud sql instances patch $(SQL_INSTANCE) --activation-policy=ALWAYS \
-		--project=$(GCP_PROJECT) --quiet 2>&1 | tail -2 || true
-	@echo "Waiting for CloudSQL to be RUNNABLE..."
-	@for i in 1 2 3 4 5 6 7 8 9 10 11 12; do \
+	@set -e; \
+	echo "Starting CloudSQL instance $(SQL_INSTANCE)..."; \
+	gcloud sql instances patch $(SQL_INSTANCE) --activation-policy=ALWAYS --project=$(GCP_PROJECT) --quiet 2>&1 | tail -2; \
+	echo "Waiting for CloudSQL to be RUNNABLE..."; \
+	cloudsql_ok=0; \
+	for i in 1 2 3 4 5 6 7 8 9 10 11 12; do \
 		state=$$(gcloud sql instances describe $(SQL_INSTANCE) --project=$(GCP_PROJECT) --format='value(state)' 2>/dev/null); \
-		if [ "$$state" = "RUNNABLE" ]; then echo "  CloudSQL is RUNNABLE."; break; fi; \
+		if [ "$$state" = "RUNNABLE" ]; then echo "  CloudSQL is RUNNABLE."; cloudsql_ok=1; break; fi; \
 		echo "  state=$$state, retrying in 15s..."; sleep 15; \
-	done
-	@echo "Waking mlflow + inference-api..."
-	@kubectl scale deployment --all -n mlflow --replicas=1 2>/dev/null || true
-	@kubectl scale deployment --all -n inference --replicas=2 2>/dev/null || true
-	@echo "Waking ArgoCD core..."
-	@for d in $(ARGOCD_DEPLOYS); do kubectl scale deployment $$d -n argocd --replicas=1 2>/dev/null || true; done
-	@kubectl scale statefulset argocd-application-controller -n argocd --replicas=1 2>/dev/null || true
-	@echo "Waking KFP core..."
-	@for d in $(KFP_DEPLOYS); do kubectl scale deployment $$d -n kubeflow --replicas=1 2>/dev/null || true; done
-	@echo "Re-enabling ArgoCD auto-sync..."
-	@kubectl patch applications.argoproj.io inference-api -n argocd --type merge \
-		-p '{"spec":{"syncPolicy":{"automated":{"prune":true,"selfHeal":true}}}}' 2>/dev/null || true
-	@echo "Waiting for MLflow to be ready (~2 min)..."
-	@kubectl wait --for=condition=available --timeout=180s deployment/mlflow -n mlflow 2>/dev/null || true
-	@echo ""
-	@echo "URLs:"
-	@make gke-urls
-	@echo ""
-	@echo "If inference-api returns 503, run: make bootstrap"
+	done; \
+	if [ "$$cloudsql_ok" != "1" ]; then \
+		echo ""; echo "✗ FAILED: CloudSQL did not reach RUNNABLE in 3 minutes."; \
+		echo "  Run \`gcloud sql instances describe $(SQL_INSTANCE)\` for status."; \
+		exit 1; \
+	fi; \
+	echo "Waking mlflow + inference-api..."; \
+	kubectl scale deployment --all -n mlflow --replicas=1; \
+	kubectl scale deployment --all -n inference --replicas=2; \
+	echo "Waking ArgoCD core..."; \
+	for d in $(ARGOCD_DEPLOYS); do kubectl scale deployment $$d -n argocd --replicas=1; done; \
+	kubectl scale statefulset argocd-application-controller -n argocd --replicas=1; \
+	echo "Waking KFP core..."; \
+	for d in $(KFP_DEPLOYS); do kubectl scale deployment $$d -n kubeflow --replicas=1; done; \
+	echo "Re-enabling ArgoCD auto-sync..."; \
+	kubectl patch applications.argoproj.io inference-api -n argocd --type merge \
+		-p '{"spec":{"syncPolicy":{"automated":{"prune":true,"selfHeal":true}}}}'; \
+	echo "Waiting for MLflow to be ready (~2 min)..."; \
+	if ! kubectl wait --for=condition=available --timeout=180s deployment/mlflow -n mlflow; then \
+		echo ""; echo "✗ FAILED: MLflow did not reach Available in 180s."; \
+		echo "  kubectl describe pod -n mlflow -l app=mlflow"; \
+		echo "  kubectl logs -n mlflow deploy/mlflow --tail=50"; \
+		exit 1; \
+	fi; \
+	echo "Waiting for inference-api to be ready (~2 min)..."; \
+	if ! kubectl wait --for=condition=available --timeout=180s deployment/inference-api -n inference; then \
+		echo ""; echo "✗ FAILED: inference-api did not reach Available in 180s."; \
+		echo "  This usually means @champion can't load. Run \`make bootstrap\`."; \
+		exit 1; \
+	fi; \
+	echo "Waiting for ml-pipeline (KFP) to be ready (~2 min)..."; \
+	if ! kubectl wait --for=condition=available --timeout=180s deployment/ml-pipeline -n kubeflow; then \
+		echo ""; echo "✗ FAILED: ml-pipeline did not reach Available in 180s."; \
+		echo "  Autoresearch submission will fail with HTTP 500 until this recovers."; \
+		exit 1; \
+	fi; \
+	echo ""; \
+	echo "✓ Cluster ready."; \
+	echo ""; \
+	echo "URLs:"; \
+	$(MAKE) -s gke-urls
 
 gke-status:
 	@echo "=== Nodes ==="
@@ -294,16 +317,19 @@ k8s-status:
 	@kubectl get pods -n inference --no-headers 2>/dev/null || echo "  namespace not found"
 
 demo:
-	@echo "Starting all services (port-forwarding from cluster)..."
-	@echo "  MLflow UI:    http://localhost:5000"
-	@echo "  ArgoCD UI:    https://localhost:8090  (admin / $$(kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d))"
-	@echo "  Inference API:    http://localhost:8001"
+	@echo "Demo URLs (one access path per service):"
 	@echo ""
-	@kubectl port-forward -n mlflow svc/mlflow 5000:5000 &
-	@echo "  ArgoCD:       http://$$(kubectl get svc argocd-server -n argocd -o jsonpath='{.status.loadBalancer.ingress[0].ip}') (no port-forward needed)"
-	@kubectl port-forward -n inference svc/inference-api 8001:80 &
-	@echo "All services running. Use 'make demo-stop' to stop."
-	@wait
+	@MLFLOW_IP=$$(kubectl get svc mlflow -n mlflow -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null); \
+	ARGOCD_IP=$$(kubectl get svc argocd-server -n argocd -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null); \
+	KFP_IP=$$(kubectl get svc ml-pipeline-ui -n kubeflow -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null); \
+	INFER_IP=$$(kubectl get svc inference-api -n inference -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null); \
+	echo "  MLflow UI:        http://$$MLFLOW_IP:5000"; \
+	echo "  ArgoCD UI:        http://$$ARGOCD_IP (admin / see NOTES.md)"; \
+	echo "  KFP UI:           http://$$KFP_IP"; \
+	echo "  Inference API:    http://$$INFER_IP/predict  (GET /health for liveness)"
+	@echo ""
+	@echo "(All services use stable LoadBalancer IPs — no port-forward needed."
+	@echo "  If you want a local-only port-forward instead, run 'make mlflow'.)"
 
 demo-stop:
 	@echo "Stopping demo services..."
