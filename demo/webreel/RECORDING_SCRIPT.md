@@ -69,7 +69,7 @@ In post: pick a single color (e.g. `#22d3ee`), and every time the same ID reappe
 
 ```bash
 # === Repo state ===
-cd ~/Desktop/code/experiment/customer_churn
+cd ~/Desktop/code/experiment/ML-deployment-system-for-autoresearch
 git status --short                       # should be clean (or only your audit MDs)
 git rev-parse --short HEAD               # note this — useful in narration
 
@@ -352,4 +352,4 @@ Use instead:
 - `scripts/capture-terminal.sh` — asciinema wrapper
 - `README.md` — installation, validate/preview/record flow
 - `RECORDING_PLAN_TRUST_FIRST.md` — original council pushback (superseded by this doc)
-- Root `EXPLANATION.md §16-17` — pitching/positioning material this script references
+- Root `CLAUDE.md` — canonical project doc (EXPLANATION.md was dropped in commit `b982654` as a one-shot artifact)
