@@ -1,4 +1,11 @@
-"""FastAPI inference server. Loads `@champion` classifier from MLflow."""
+"""FastAPI inference server. Loads `@champion` classifier from MLflow.
+
+Pod loads the current MLflow `@champion` at startup and serves it via
+`/predict`. Annotation bumps on the Deployment template (set by the
+autoresearch loop on each kept iter) drive rolling restarts; each restart
+re-reads `@champion`, so the served model tracks the registry within one
+rollout window.
+"""
 
 import logging
 import os
