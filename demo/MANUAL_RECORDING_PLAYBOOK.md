@@ -6,44 +6,50 @@
 
 ## 1. Tool stack — what to use for what
 
-Three tiers based on budget. All produce a portfolio-quality LinkedIn 90s + YouTube 4min cut.
+Updated after exhaustive 2026 free-tier research. **The headline:** there's a fully-free open-source Screen Studio equivalent now.
 
-### Tier 1 — Minimum viable ($0 + your voice)
-| Need | Tool | Cost |
+### Tier 0 — Free OSS recommended ($0, no compromise)
+| Need | Tool | Cost / license |
 |---|---|---|
-| Capture + light edit | **QuickTime** + **iMovie** (macOS built-in) | $0 |
-| Voiceover | Your voice into QuickTime | $0 |
-| Captions | iMovie auto-generate | $0 |
+| Capture + auto-zoom + cursor smoothing + keystroke overlays | **Screenize** (github.com/syi0808/screenize) | Free, Apache 2.0 |
+| Cross-platform alternative | **Recordly** (multiple MIT mirrors on GitHub) | Free, MIT |
+| Narration recording + caption gen | **Descript** free tier (60 min/mo, 720p export) OR **MacWhisper free** + **whisper.cpp** locally | Free |
+| Stitch + speed-ramp + multi-track | **DaVinci Resolve** | Free |
+| Caption editing | **Subtitle Edit** (OSS) or DaVinci's built-in transcription | Free |
 | Total | | **$0** |
 
-Trade-off: cursor is plain, no auto-zoom. Looks like a "screenshare" not a "demo." Adequate for 1.0 of your demo.
+**Why Screenize:** Native macOS (Ventura+), ScreenCaptureKit-based, two auto-zoom modes (cursor-physics + activity-aware), keystroke badges, click ripples, motion blur, MP4/ProRes/GIF up to 4K/240fps. No watermark, no telemetry, no subscription. The README literally says "Screen Studio alternative." If you only try one new tool from this doc, this is it.
 
-### Tier 2 — Polished portfolio ($229 one-time, recommended)
+### Tier 1 — Commercial polish ($58-229 one-time)
 | Need | Tool | Cost |
 |---|---|---|
-| Capture + auto-zoom + cursor smoothing + light edit | **Screen Studio** (macOS) | $229 lifetime ($9/mo annual) |
-| Voiceover | Screen Studio's built-in recording + ElevenLabs voice clone | $5/mo if cloning |
-| Final stitch + speed-ramp | **DaVinci Resolve** | Free |
-| Captions | Screen Studio's built-in or DaVinci Studio Voice | Free |
-| Total | | **$229 + optional $5/mo** |
+| Best polish + native editor + commercial licence | **Cap.so Desktop License** | $58 lifetime |
+| Best maturity + enterprise track record | **Screen Studio** | $229 lifetime ($9/mo annual) |
+| Cursor-zoom alternative (cheapest paid) | **CursorClip** | $59 one-time |
+| Other Screen Studio rival | **Screen Charm** | $79 one-time |
 
-**Why Screen Studio:** Stripe / Vercel / Google / Adobe / Framer / Raycast all use it. The signature look (auto-zoom on click, smoothed cursor, soft motion blur, rounded-corner window frame) is what your viewer recognizes as "polished SaaS demo." It's the single highest-leverage purchase for portfolio work.
+**Trade-off vs Tier 0:** Cap.so's free tier is *non-commercial* (LinkedIn portfolio used for hiring is arguably commercial — the Desktop License removes the restriction). Screen Studio's market leadership signal (Stripe / Vercel / Google use it) doesn't matter for a portfolio creator; it matters for marketing teams needing brand stability.
 
-### Tier 3 — Pro polish (~$300 + monthly subs)
-Add on top of Tier 2:
+### Tier 2 — Add-ons (optional)
 | Need | Tool | Cost |
 |---|---|---|
-| Animated word-by-word captions for social cuts | **Submagic** | ~$23/mo |
 | Voice cloning for re-recordable narration | **ElevenLabs Starter** | $5/mo |
-| Optional auto-3D mockups for hero shots | **kite.video** Pro | $19/mo (free w/ watermark) |
+| Animated word-by-word captions for social cuts | **Submagic** | ~$23/mo |
+| AI edit assistant (cut your raw take into multiple aspect ratios) | **Cardboard demo** | Free demo, $60/mo paid |
+| Auto-3D device mockups for hero shots | **kite.video** | Free w/ watermark, $19/mo Pro |
 
 ### What to SKIP
 
 - **Vercel WebReel** — duration bug + weak cursor aesthetic + selectors break on real UIs. We tested it; it's not ready
-- **Loom / Reflect.run / Tella** — wrong tier or wrong category
-- **Arcade / Supademo** — produces interactive iframe demos, not video
+- **Loom / Tella free tiers** — quality cap (720p) + watermark + length caps
+- **Arcade / Supademo / Navattic / Storylane** — produces interactive iframe demos, not video. Free tiers limited (1-5 demos)
 - **HeyGen / Synthesia AI avatars** — reads as low-effort for technical content
-- **Sora 2 / Veo 3 generative video** — they mangle UI text (run IDs become "pixel patterns that look like text")
+- **Sora 2 / Veo 3 generative video** — they mangle UI text. Fatal for any demo where viewers need to read run IDs / metrics
+- **Vmaker, VEED, Captions.ai, OpusClip, InVideo, Pictory, Lumen5 free tiers** — all crippled (watermark + length cap + AI features paywalled). Skip
+- **Murf / PlayHT free TTS** — audible watermark or non-commercial licence. Use ElevenLabs ($5) or whisper.cpp transcription + record your own voice
+- **F5-TTS pretrained models** — CC-BY-NC licence (non-commercial). Code is MIT but pretrained weights aren't. Avoid if portfolio video might be commercial-adjacent
+
+**Honest verdict from the research:** No 2026 tool produces a Screen Studio-quality polished MLOps demo with zero manual work. Every "agentic video" tool edits footage you already shot. So **the tool stack is just "capture + edit" — pick free or paid based on your taste.**
 
 ## 2. Pre-recording prep — DO ALL OF THIS BEFORE PRESSING RECORD
 
@@ -172,13 +178,184 @@ You'll reference these IDs verbally during narration to make the audit-chain sto
 - **Resolution: 1920×1080** for the browser windows. Use Rectangle / Magnet to snap them
 - If you have a multi-monitor setup: **record from one screen only**, hide the others
 
-## 3. Scene-by-scene shot list (time-coded)
+## 3. Recording approach — single long take + narrate over it (RECOMMENDED)
 
-Each beat below: target length, exact window state at start, time-coded shot list (every 1-3 seconds is a shot), word-for-word narration, and post-production notes.
+**Replaces the earlier 8-beat choreographed approach.** Simpler, more honest, less can go wrong, lets you talk *about* what's happening instead of executing a script.
 
-**Record each beat as a SEPARATE Screen Studio recording.** Easier to re-take a 35-second clip than to redo the entire 5-minute video. After recording, you'll stitch them in playback order in DaVinci.
+**The format:** One continuous screen recording, ~10-15 min of real time, fast-forwarded 4-8× in post. You narrate over the speed-ramped footage. The viewer watches the actual loop run end-to-end — Claude's proposal → KFP training → MLflow promotion → GitHub PR → ArgoCD reconcile → live API showing the new version.
 
-**Read the cursor choreography rules in Section 3.5 BEFORE recording.** They make the difference between "screenshare" and "demo."
+**Why this is better:**
+- "Real" beats "polished" for the agentic-AI genre. Demos that feel choreographed read as theatre
+- You get to talk about successes AND failures/reverts as they happen — more credible than a hand-picked success montage
+- One Screen Studio / Screenize recording, not 8 separate clips that need stitching
+- If a tab loads slowly or a click misfires, doesn't matter — speed-ramp covers it
+
+**The shape of the video (target: 3-4 min final cut):**
+
+| Phase | Real time | Final cut time | What's on screen |
+|---|---|---|---|
+| 1. Setup | 30s | 30s real-time | Terminal, kick off `make autoresearch-run AUTORESEARCH_N=2 AUTORESEARCH_HOURS=1.0` |
+| 2. Observation | 10-15 min | ~2.5 min @ 5× speed-ramp | Multi-pane: ArgoCD + KFP + terminal logs |
+| 3. Receipts | 45s | 45s real-time | Switch to GitHub PRs (show 2 merged) → MLflow tags → curl /health |
+
+Sections 3.1–3.3 below cover each phase in detail. Sections 3.4–3.8 are the supporting rules (cursor, errors, what NOT to say, framing).
+
+---
+
+### 3.1 Phase 1 — Setup (30s real-time)
+
+**Window layout for the entire recording — set this up BEFORE pressing record:**
+
+```
+┌──────────────────────────────────┬─────────────────────────┐
+│                                  │                         │
+│         ArgoCD                   │     Kubeflow            │
+│         (left ~60%)              │     Pipelines           │
+│                                  │     (right top ~40%)    │
+│         shows: app tree,         │                         │
+│         Synced/Healthy banner    │     shows: latest run   │
+│                                  │                         │
+│                                  ├─────────────────────────┤
+│                                  │                         │
+│                                  │     Terminal            │
+│                                  │     (right bottom ~40%) │
+│                                  │                         │
+│                                  │     `make autoresearch- │
+│                                  │     logs` streaming     │
+└──────────────────────────────────┴─────────────────────────┘
+```
+
+Use Rectangle or Magnet (free macOS window managers) to snap this. Save as a workspace if either tool supports it.
+
+**Why these three panes:**
+- **ArgoCD (left, biggest)** — the climax of each iter is the rolling restart, which ArgoCD shows dramatically. Banner flips OutOfSync → Synced. Pods cycle. Sync history grows. **This is the most visually interesting pane.**
+- **KFP (top right)** — the training-actually-happening pane. DAG nodes go from gray → spinning → green.
+- **Terminal (bottom right)** — `make autoresearch-logs` streams Claude's actual proposals + KFP run IDs + AUC results. This is the "see what the agent is thinking" pane.
+
+**Pre-recording state (verify before pressing record):**
+1. ArgoCD pane: showing `inference-api` application, resource tree visible, banner shows Synced + Healthy
+2. KFP pane: showing the Runs list (`#/runs`), filtered to recent — most recent run visible at top
+3. Terminal pane: clean prompt, history cleared, no other windows behind it
+4. **Camera off** (or whatever capture mode Screenize/Screen Studio uses — you don't need facecam for this)
+5. Microphone armed (verify with `Audio MIDI Setup` that the right input is selected)
+6. DND on, dock hidden, menubar hidden, no notification badges anywhere
+
+**Shot list for phase 1:**
+| T+ | Duration | Action | What viewer sees |
+|---|---|---|---|
+| 0:00 | 3s | Press record. Cursor parked in terminal. | Layout visible, all 3 panes settled. |
+| 0:03 | 4s | Type `git rev-parse --short HEAD` slowly. | Hash appears. |
+| 0:07 | 2s | Press Enter. | Hash printed. |
+| 0:09 | 8s | Type `make autoresearch-run AUTORESEARCH_N=2 AUTORESEARCH_HOURS=1.0` slowly. | Command appears, character-by-character. |
+| 0:17 | 1s | Press Enter. | Job submission output starts. |
+| 0:18 | 5s | Wait for `job.batch/autoresearch-real-… created` and `Watch with: make autoresearch-logs`. | Output visible. |
+| 0:23 | 2s | Type `make autoresearch-logs` and press Enter. | Logs start streaming. |
+| 0:25 | 5s | Let the first few autoresearch loop lines appear. | "Iter 1 of 2 — asking Claude...", etc. |
+| 0:30 | — | End of phase 1. | Cut to phase 2 (just keep recording). |
+
+**Narration for phase 1 (read once, ~75 words, ~30s):**
+> "This is the autoresearch loop running for real. I'm asking it for two iterations — that's two chances to propose a code change, train it, and promote it if it beats the current champion. The terminal on the right is the agent's log stream. The middle-right pane is Kubeflow — that's where the actual training happens. The big pane on the left is ArgoCD — that's where the GitOps reconciliation will show up when something gets promoted. Let's watch."
+
+---
+
+### 3.2 Phase 2 — Observation (10-15 min real-time, ~2.5 min at 5× speed)
+
+**This is the meat of the video.** You leave the recording running while the cluster runs the 2 iterations. The screen captures everything in real time. In post, you fast-forward 4-8× through the boring parts and narrate over the speed-ramped footage.
+
+**What will happen during phase 2 (so you know what to narrate over):**
+
+Each iteration takes ~2-5 minutes. Two iterations = ~5-10 min real time. During each iter:
+
+**Iteration 1 timeline (annotated for narration):**
+| Real time | What happens visually | What to narrate (improvise based on actual values) |
+|---|---|---|
+| 0:00-0:30 | Terminal: Claude API call. "Proposing change..." then a code diff appears | "Claude just proposed *<the change>*. Notice it's writing actual Python — params.yaml or src/train.py edits — not just hyperparam values." |
+| 0:30-1:00 | Terminal: `applying patch...`, `submitting KFP run...`. KFP pane updates with a new entry at the top of the runs list | "It's applied the patch locally and submitted a Kubeflow pipeline. Watch the KFP pane — a new run just appeared." |
+| 1:00-2:30 | KFP pane: new run goes from gray → spinning (preprocess running) → green preprocess + spinning train → all 3 green. Terminal shows the AUC result | "Three containers, three pods. preprocess, then train, then evaluate. The evaluate step compares AUC to the current champion." |
+| 2:30-3:00 | **CASE A (improvement):** Terminal: "AUC X > champion Y, promoting." MLflow gets updated. Terminal: "creating PR..." | "AUC improved. So the loop's about to commit a change to git, ArgoCD will pick it up, and the live model gets replaced. This is the GitOps chain." |
+| 2:30-3:00 | **CASE B (regression):** Terminal: "AUC X < champion Y, reverting." | "AUC came back worse than the champion. So the loop reverts the local change and tries again next iter. The live model is unaffected — it stays at the current champion. This is the safety property." |
+| 3:00-3:30 | (Case A only) ArgoCD pane: banner flips Synced → OutOfSync (a moment of yellow). Then back to Synced as the reconciler pulls. Pods cycle in the resource tree. | "Watch ArgoCD — banner just went OutOfSync. The PR landed, ArgoCD's seeing the diff, and it's reconciling. There — Synced again. The pods are restarting now. New pods will load the new @champion model on startup." |
+
+**Iteration 2 timeline:** Same pattern. Different change. Possibly different outcome.
+
+**Recording rules during phase 2:**
+
+1. **DO NOT touch the keyboard** unless something goes wrong. The whole point is to show "this happens autonomously." Mouse may move slightly to point at things, but no clicks.
+
+2. **Improvise narration LIVE if you can** — that's the most natural delivery. If you'd rather record narration after, just do not narrate during recording; capture only screen + maybe key clicks. You can voice-over in post.
+
+3. **If something fails or reverts, narrate it honestly.** The whole credibility play here is "AI proposes, system checks, only winners ship." A failed iter is the BEST proof of that property. Don't try to hide it.
+
+4. **Don't cut the recording.** Let it run. If iter 1 finishes at 3 min and iter 2 doesn't start for another minute, the dead minute speed-ramps to ~12 seconds in post — no big deal.
+
+**Narration content guide for phase 2 (specific things to say when you see them):**
+
+When Claude's proposal appears in the terminal:
+> "Claude's proposing *[describe the diff in plain English — 'switching from decision tree to gradient boosting' / 'adding 5 more features']*. Notice the rationale field — that's Claude explaining *why* it's making this change. The loop logs that to MLflow as a tag, so every model has a human-readable answer to 'why does this look like this?'"
+
+When a KFP run goes green:
+> "Three steps, all green. preprocess pulled the dataset, train fit the model, evaluate compared AUC to the current champion."
+
+When AUC beats champion (Case A):
+> "AUC delta: *[X to Y]*. That's above the *min_improvement* threshold — 0.001 — so the loop's promoting it. Watch what happens next: it'll commit the rollout change as a PR, the GitHub App auto-merges, ArgoCD picks it up, the pods cycle."
+
+When AUC doesn't beat (Case B):
+> "AUC came in below the threshold. The loop's reverting the local change — see the terminal. The live model stays at the previous champion. The whole point of this design is that the live model can't get worse than the last winning candidate."
+
+When ArgoCD banner flips OutOfSync:
+> "There it goes. ArgoCD just noticed the deployment annotation changed in git. It's reconciling now. Watch the pods cycle in the resource tree — that's the rolling restart. New pods will load the new model from MLflow at startup."
+
+When iter 2 starts:
+> "Iter 2. Same loop — Claude reads the current code, proposes something new, the cluster trains it. Let's see what it tries this time."
+
+When the whole thing ends:
+> "Two iterations done. *[Summarize: 1 promoted, 1 reverted / both promoted / both reverted — whatever happened]*. The live model is now at version *[N]*. Let's verify."
+
+**Post-production for phase 2:**
+- Speed-ramp 5× through everything that's not a state transition
+- Real-time on: Claude's proposal lines appearing, KFP DAG turning green, ArgoCD banner flipping, pod cycling
+- Voice-over the whole thing (record narration after, drop on the timeline)
+- Add captions (Descript free / DaVinci Studio Voice / Subtitle Edit)
+- Add small "Iter 1" / "Iter 2" text overlay in upper-left corner so the viewer knows where they are
+
+---
+
+### 3.3 Phase 3 — Receipts (45s real-time)
+
+**The closing.** Three quick proofs that the system actually shipped what it claimed:
+
+**Pane to switch to:** Move ArgoCD to the side, bring up either a full-screen browser (GitHub) or split into 2 panes (GitHub + MLflow). Keep the terminal visible.
+
+**Shot list:**
+| T+ (from end-of-phase-2) | Duration | Action | What viewer sees |
+|---|---|---|---|
+| 0:00 | 5s | Switch focus to GitHub PRs tab. | Merged PRs list filtered to `auto-exp`. The 2 (or 1) PRs from this run are at the top. |
+| 0:05 | 10s | Click the most recent merged PR. Show the body containing KFP run ID, MLflow run ID, AUC delta. | PR conversation visible. |
+| 0:15 | 5s | Click "Files changed" tab. Show the params.yaml or src diff. | 1-3 line diff visible. |
+| 0:20 | 10s | Switch to MLflow. Click the corresponding run. Hover on `kfp_run_id` tag. | UUID visible, same as PR body. |
+| 0:30 | 5s | Switch to terminal. Paste `curl -s http://34.47.242.89/health \| jq .`. | Command appears. |
+| 0:35 | 1s | Press Enter. | Response renders. |
+| 0:36 | 9s | Hold on the JSON: `model_version` matches the version the loop promoted. | Receipt visible. |
+| 0:45 | — | End. | Cut to scope-decisions slide (optional). |
+
+**Narration for phase 3 (~45s, ~110 words):**
+> "Receipts. Two surfaces. First — GitHub. Here are the merged PRs from this run, each with the KFP run ID and MLflow run ID in the body. Signed by the GitHub App — green Verified badge. The diff is small and inspectable. [click MLflow] Same run ID appears as a tag on the MLflow run that produced the model. That's the lineage — KFP execution to MLflow artifact to GitHub PR. And the live API: curl /health. Model version *[N]*. Same number that just landed in the ArgoCD annotation a few minutes ago. End to end, fully auditable."
+
+---
+
+### 3.4 The ID-matching motif (lighter-touch in this format)
+
+In the choreographed multi-clip version, this motif was the centerpiece. In the single-take version, it's still there but less emphasized — the viewer sees the same IDs naturally because they're visible across panes simultaneously. So:
+
+- In the ArgoCD pane during phase 2, the deployment annotation `mlops/classifier-run-id` is visible whenever you click the Deployment
+- In the KFP pane, the latest run's UUID at the top of the page
+- In the GitHub PR body during phase 3, the same UUIDs in the body
+- In the MLflow tag during phase 3, again
+- In the `curl /health` response, the `model_run_id` field
+
+You don't need to call out each appearance explicitly — narrate it once in phase 3 ("same run ID...") and let the viewer's pattern-recognition kick in.
+
+**Post-production highlight:** When you mention "same run ID" in narration, add a 2-second cyan rectangle overlay (`#22d3ee`) around the UUID in whatever pane is on screen at that moment. One time is enough; don't overdo it.
 
 ---
 
@@ -509,18 +686,16 @@ Screen Studio specifically has a "Highlight" annotation tool — use that. Don't
 
 ## 5. Recording order on shoot day
 
-Do scenes in this order — NOT the playback order. Reasons noted.
+With the single-take "observation" approach, the order is straightforward:
 
-1. **Beat 4 (KFP)** — first because you need the KFP run ID to anchor everything else
-2. **Beat 5 (MLflow)** — confirms the same ID appears in the MLflow tag
-3. **Beat 6 (GitHub)** — confirms the same ID appears in the PR body
-4. **Beat 7 (ArgoCD + terminal)** — confirms it appears in the annotation and the API
-5. **Beat 3 (terminal kick-off)** — easy, no dependencies, can record anytime
-6. **Beat 8 (scope slide)** — pure recording, no UI
-7. **Beat 2 (system map slide)** — pure recording, no UI
-8. **Beat 1 (composite hero shot)** — last, because you need screenshots of all the above
+1. **Pre-flight** (15 min) — verify cluster state, log into ArgoCD, set up the 3-pane window layout, clear terminal history, dismiss any system banners, microphone check
+2. **Press record on Screenize/Screen Studio** (covers entire screen)
+3. **Run phases 1 + 2 in one continuous recording** — 10-15 min real time. Don't stop the recording even if iter 2 fails or reverts; that's the point
+4. **Phase 3 — receipts** — can be in the same recording (just switch tabs) or a separate short recording for cleaner cuts
+5. **Optional: re-record narration** in Descript over the speed-ramped footage if your live narration was rough
+6. **Edit** in DaVinci Resolve or Screenize's built-in editor — speed-ramp, captions, music
 
-Total active recording time: ~45-60 min if no retakes. Plan for 2× that with retakes.
+Total active recording time: 15-20 min cluster + ~5 min on phase 3. Plan ~30-45 min of editing for a 3-4 min final cut. **Whole shoot day: half a Saturday.**
 
 ## 6. Post-production (DaVinci Resolve, free)
 
@@ -548,29 +723,55 @@ Total active recording time: ~45-60 min if no retakes. Plan for 2× that with re
 - **Portfolio site / resume:** the 4min cut, framed as **MLOps + LLMOps**, not just MLOps
 - **Twitter/X (optional):** thread of 7 tweets, one per beat, each a 15s clip from the master. More discoverable than LinkedIn
 
-## 8. Honest pre-shoot checklist
+## 8. Pre-shoot checklist
 
-- [ ] Screen Studio installed and licensed
-- [ ] All 4 browser tabs pre-configured per Section 2A
-- [ ] Terminal font size 18+, dark theme, history cleared (Section 2B)
-- [ ] State snapshot pasted in sticky note (Section 2C)
-- [ ] Dock + menu bar hidden, DND on, distracting apps quit (Section 2D)
-- [ ] `demo-commands.sh` staged so you don't type live
-- [ ] Quiet room, microphone tested (if recording own voice)
-- [ ] One real autoresearch run completed within the last hour (UIs have fresh state to show)
-- [ ] You've read this doc top to bottom once
+For the single-take observation approach:
 
-When all checked → press record on Beat 4 first.
+**Tools:**
+- [ ] Screenize OR Screen Studio installed
+- [ ] DaVinci Resolve installed (for editing)
+- [ ] Window manager (Rectangle / Magnet) installed and configured
+
+**Cluster + UIs:**
+- [ ] Cluster awake — `kubectl get pods -A` returns clean state
+- [ ] `curl http://34.47.242.89/health` returns `model_loaded: true`
+- [ ] ArgoCD logged in (verify by reloading) — see Section 2A Tab 3
+- [ ] All 4 tabs pre-configured per Section 2A
+- [ ] One autoresearch run completed within the last hour (UIs have fresh state, recent merged PRs visible)
+
+**3-pane layout:**
+- [ ] ArgoCD left ~60%
+- [ ] KFP top-right ~40%
+- [ ] Terminal bottom-right ~40%
+- [ ] Saved as workspace if your window manager supports it
+
+**Recording environment:**
+- [ ] Dock + menu bar hidden (Section 2D)
+- [ ] DND on, system update banners dismissed (Section 2A.1)
+- [ ] GitHub notification badges cleared (Section 2A.1)
+- [ ] Microphone tested — clean audio, no echo, no background noise
+- [ ] Terminal font size 18+, dark theme, history cleared
+
+**You:**
+- [ ] Read Section 3.1, 3.2, 3.3 top to bottom once
+- [ ] Read the cursor rules (Section 3.5) and the what-NOT-to-say list (Section 3.7)
+- [ ] Glass of water nearby (recording is dry-mouth fuel)
+
+When all checked → press record + run `make autoresearch-run AUTORESEARCH_N=2 AUTORESEARCH_HOURS=1.0`.
 
 ## 9. What I'd actually do for v1.0
 
-If you're optimizing for **shipping the demo in one weekend**:
-- Buy **Screen Studio ($229)**
-- Skip the AI voice — record your own voice. Adds 30 min, saves a subscription
-- Skip Submagic — use DaVinci Studio Voice captions. Free, good enough for a portfolio
-- Skip the architecture slide (beat 2) initially — go straight from beat 1 to beat 3. Add beat 2 in v1.1 if you want a longer cut
-- 6 beats × ~5 min recording each = ~30 min total recording
-- 90 min editing in Screen Studio's built-in editor
-- One 90s LinkedIn cut + one 3min YouTube cut. Ship Sunday night.
+If you're optimizing for **shipping the demo in one Saturday afternoon**:
 
-That's a real one-weekend project for a portfolio piece you'll lean on for 12+ months. **$229 total, ~6 hours of work.**
+1. **Tooling: $0.** Download **Screenize** (`brew install --cask screenize` if available, or grab the release binary from the GitHub repo). Use **Descript** free for captions, **DaVinci Resolve** free for stitch. Record your own voice live in the recording.
+2. **Pre-flight (~20 min):** verify cluster + UIs + 3-pane layout (see Section 2A)
+3. **Phase 1 + 2 recording (~12-15 min real time):** kick off `make autoresearch-run AUTORESEARCH_N=2 AUTORESEARCH_HOURS=1.0`, let it run, narrate over it
+4. **Phase 3 recording (~2 min):** click through GitHub PR + MLflow tag + curl /health
+5. **Edit (~45-60 min):** speed-ramp dead time 5×, trim head/tail, captions, optional music. Export 90s + 3-4 min cuts
+6. **Ship**
+
+**Total: ~2-3 hours. $0.**
+
+Upgrade to **Cap.so Desktop License ($58 lifetime)** if you want the polished commercial-licensed alternative. Skip Screen Studio's $229 unless you specifically want the enterprise track record.
+
+For voice: record your own. AI voice (ElevenLabs $5/mo) is a quality upgrade but not necessary for v1.0. You can always re-record narration in v1.1.
