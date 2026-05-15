@@ -6,7 +6,7 @@
   "clickDwell": 140,
   "videos": {
     "github-prs": {
-      "url": "https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/pulls?q=is%3Apr+is%3Amerged+autoresearch",
+      "url": "https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/pulls?q=is%3Apr+is%3Amerged+auto-exp",
       "fps": 60,
       "quality": 85,
       "output": "04-github.mp4",

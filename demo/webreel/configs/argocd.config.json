@@ -12,16 +12,15 @@
       "output": "03-argocd.mp4",
       "waitFor": { "text": "Argo CD" },
       "steps": [
-        { "action": "pause", "ms": 1500, "label": "ArgoCD • login", "description": "NOTE: ArgoCD requires auth. webreel can't preserve session state, so we either (a) skip the login click and start the recording on an already-logged-in tab via `webreel preview` to set up state then `record` immediately (fragile), or (b) record login + use `username: admin` / a TEST password (rotate after demo)." },
-        { "action": "type", "text": "admin", "selector": "input[name='username']", "charDelay": 80, "delay": 600, "label": "username: admin" },
-        { "action": "type", "text": "${ARGOCD_PASSWORD}", "selector": "input[name='password']", "charDelay": 30, "delay": 600, "label": "password: ••••••••" },
-        { "action": "click", "text": "Sign In", "delay": 1800 },
-        { "action": "wait", "text": "inference-api", "timeout": 12000 },
-        { "action": "pause", "ms": 1600, "label": "inference-api • Synced • Healthy", "description": "The whole point: ArgoCD has reconciled the annotation bump and the live cluster matches git." },
-        { "action": "click", "text": "inference-api", "delay": 1800, "label": "open app", "description": "Show the resource tree — Deployment → ReplicaSet → 2 Pods, all Synced." },
-        { "action": "pause", "ms": 2200 },
-        { "action": "scroll", "y": 200, "delay": 800 },
-        { "action": "pause", "ms": 1400, "label": "Sync history: every autoresearch promotion is here" }
+        { "action": "pause", "ms": 1200, "description": "DO NOT record the login screen — webreel has no cookie/storage-state, so we'd be typing credentials on camera. Instead: capture ArgoCD as a screenshot of the already-logged-in app view in the editor, OR run this config against an authenticated ArgoCD URL with a temporary password and CUT the login segment in post. See RECORDING_SCRIPT.md §ArgoCD." },
+        { "action": "wait", "text": "inference-api", "timeout": 20000, "description": "Assumes you're already logged in OR ArgoCD has been temporarily unauthenticated for the recording (kubectl patch argocd-cmd-params-cm server.disable.auth=true, then revert)." },
+        { "action": "pause", "ms": 1800, "label": "inference-api • Synced • Healthy", "description": "GitOps chain receipt: ArgoCD has reconciled and the live cluster matches git." },
+        { "action": "click", "text": "inference-api", "delay": 1800, "label": "open app" },
+        { "action": "wait", "text": "Deployment", "timeout": 10000 },
+        { "action": "pause", "ms": 2200, "label": "resource tree • Deployment → ReplicaSet → 2 Pods" },
+        { "action": "scroll", "y": 300, "delay": 800, "description": "Scroll down to where the deployment's pod-template annotations are visible." },
+        { "action": "hover", "text": "mlops/classifier-version", "delay": 800, "label": "mlops/classifier-version", "description": "ID-MATCHING MOTIF — this annotation value is the same MLflow registered-model version that won earlier. Bumping this is what triggered the rolling restart." },
+        { "action": "pause", "ms": 1800, "label": "Sync history: every promotion is here" }
       ]
     }
   }

@@ -15,14 +15,16 @@
         { "action": "pause", "ms": 1800, "label": "Kubeflow Pipelines • one run per iter" },
         { "action": "click", "selector": "table tbody tr:nth-of-type(1) a", "delay": 1800, "label": "open latest run", "description": "Click into the most recent KFP run — last autoresearch iter." },
         { "action": "wait", "text": "preprocess", "timeout": 10000 },
-        { "action": "pause", "ms": 1600, "label": "preprocess → train → evaluate DAG", "description": "Settle on the DAG so the 3 green nodes are visible." },
-        { "action": "click", "text": "preprocess", "delay": 1400, "label": "preprocess step", "description": "Click the preprocess node to open its side-panel." },
-        { "action": "pause", "ms": 1400 },
-        { "action": "click", "text": "Logs", "delay": 1500, "label": "preprocess logs", "description": "Show the actual training-side logs from this step." },
+        { "action": "pause", "ms": 1800, "label": "preprocess → train → evaluate • all green", "description": "Settle on the DAG so the 3 green nodes are visible." },
+        { "action": "click", "text": "preprocess", "delay": 1400, "label": "preprocess step" },
+        { "action": "pause", "ms": 1200 },
+        { "action": "click", "text": "Logs", "delay": 1500, "label": "preprocess logs", "description": "Real logs from the step container — proves this is a real K8s execution, not a mock." },
         { "action": "pause", "ms": 2000 },
-        { "action": "click", "text": "train", "delay": 1500, "label": "train step", "description": "Switch focus to the train node." },
-        { "action": "pause", "ms": 1400 },
-        { "action": "click", "text": "Metrics", "delay": 1400, "label": "train metrics", "description": "Show the AUC / accuracy / F1 logged from this step to MLflow." },
+        { "action": "click", "text": "train", "delay": 1500, "label": "train step • produces classifier.pkl" },
+        { "action": "pause", "ms": 1600, "description": "Don't click 'Metrics' here — KFP's train node doesn't surface metrics. Metrics flow from evaluate → MLflow. The trust receipt for THIS scene is the KFP run ID + green nodes." },
+        { "action": "click", "text": "evaluate", "delay": 1400, "label": "evaluate step • compares AUC vs @champion" },
+        { "action": "pause", "ms": 1600 },
+        { "action": "click", "text": "Logs", "delay": 1500, "label": "promotion decision in logs", "description": "evaluate.py logs whether AUC beat the current @champion. If yes, it sets the alias — that's what triggers the GitOps chain." },
         { "action": "pause", "ms": 1800 }
       ]
     }
