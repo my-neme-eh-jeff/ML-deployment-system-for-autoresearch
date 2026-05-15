@@ -228,6 +228,10 @@ jobs:
           GH_INSTALLATION_ID: ${{ secrets.GH_INSTALLATION_ID }}
           GH_PEM_SECRET_PROJECT: ${{ secrets.GH_PEM_SECRET_PROJECT }}
           GH_PEM_SECRET_NAME: ${{ secrets.GH_PEM_SECRET_NAME }}
+          # `auto_experiment` is a top-level package in the repo (not an
+          # installed pip package). Put the repo root on PYTHONPATH so
+          # the script's `from auto_experiment import github_commit` works.
+          PYTHONPATH: ${{ github.workspace }}
         run: uv run python scripts/ci_open_image_bump_pr.py
 
   compile-kfp:
