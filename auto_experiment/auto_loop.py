@@ -656,6 +656,20 @@ def _revert_mlflow_champion(prev_version: str | None) -> None:
         print(f"  WARN: failed to revert @champion to v{prev_version}: {e}")
 
 
+def _slugify_branch_segment(name: str) -> str:
+    """Reduce an LLM-supplied experiment name to a git-ref-safe segment.
+
+    Git ref-format rejects spaces, `..`, `~`, `^`, `:`, `?`, `*`, `[`, `\\`,
+    control chars, and trailing dots. Anything outside `[A-Za-z0-9._-]` is
+    collapsed to a single hyphen; leading/trailing punctuation is stripped;
+    the result is capped at 30 chars. Empty after sanitization falls back
+    to `"iter"` so we always return a usable segment.
+    """
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", name or "")
+    slug = slug.strip("-._")[:30]
+    return slug or "iter"
+
+
 def _rewrite_last_history_row_to_failed(reason: str) -> None:
     """Mutate the last history.tsv row in place: outcome `improved` → `failed`.
 
@@ -722,12 +736,9 @@ def open_iter_pr_with_auto_merge(
 
     # Per-iter branch off the *current* main HEAD. Picks up any [skip ci]
     # commits CI pushed back from the previous iter's merge.
-    # `name` comes from the LLM. Git ref-format requires no spaces, no `..`,
-    # no `~`, `^`, `:`, `?`, `*`, `[`, `\`, no trailing `.`, etc. Slugify to
-    # the safe subset before stitching into the branch name — otherwise an
-    # LLM output like "tune α / β regularization" trips create_branch_from_main.
-    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-._")[:30] or "iter"
-    iter_branch = f"auto/run-{run_id}-iter-{iter_num:02d}-{slug}"
+    iter_branch = (
+        f"auto/run-{run_id}-iter-{iter_num:02d}-{_slugify_branch_segment(name)}"
+    )
     github_commit.create_branch_from_main(
         token, gh_config["owner"], gh_config["repo"], iter_branch
     )
@@ -816,6 +827,68 @@ def commit_improvement(
 # ── MLflow logging ────────────────────────────────────────────────────────────
 
 
+# Patterns for redacting anything that looks like a secret before we log it
+# to MLflow. The MLflow UI is public (audit-acked portfolio scope), so any
+# generated source, error text, or rationale that happens to contain an env
+# var assignment, API key, or PEM body would become a public artifact. The
+# regexes target the obvious-shape leaks; sophisticated leaks need a real
+# secret scanner.
+_SECRET_PATTERNS = [
+    # AWS/GCP/GitHub/Anthropic-style key=value with quoted or bare values.
+    (
+        re.compile(
+            r"(?i)\b("
+            r"AWS_(?:ACCESS_KEY_ID|SECRET_ACCESS_KEY|SESSION_TOKEN)"
+            r"|GH(?:E)?_TOKEN|GITHUB_TOKEN|GITHUB_PAT_TOKEN"
+            r"|ANTHROPIC_API_KEY|OPENAI_API_KEY"
+            r"|GCP_SERVICE_ACCOUNT_KEY|GOOGLE_API_KEY"
+            r"|MLFLOW_TRACKING_PASSWORD|DATABASE_URL|DB_PASSWORD"
+            r")\s*[=:]\s*\S+"
+        ),
+        r"\1=[REDACTED]",
+    ),
+    # PEM blocks (private keys).
+    (
+        re.compile(
+            r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----.*?"
+            r"-----END (?:RSA |EC |OPENSSH )?PRIVATE KEY-----",
+            re.DOTALL,
+        ),
+        "[REDACTED-PEM]",
+    ),
+    # Bearer tokens in HTTP headers / error text.
+    (
+        re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._\-]+"),
+        "Bearer [REDACTED]",
+    ),
+    # Anthropic key shape (sk-ant-...).
+    (
+        re.compile(r"\bsk-ant-[A-Za-z0-9_\-]{20,}"),
+        "[REDACTED-ANTHROPIC-KEY]",
+    ),
+    # GitHub App PEM may not match the block regex if newlines are stripped;
+    # catch the begin/end markers separately.
+    (
+        re.compile(r"-----(?:BEGIN|END)[ A-Z]*PRIVATE KEY-----"),
+        "[REDACTED-PEM-MARKER]",
+    ),
+]
+
+
+def _redact_secrets(text: str | None) -> str:
+    """Return `text` with obvious-shape secret patterns replaced.
+
+    Always returns a string (treats None as empty) so callers can pass it
+    straight to mlflow.log_text / set_tag without further guards.
+    """
+    if not text:
+        return ""
+    out = text
+    for pattern, replacement in _SECRET_PATTERNS:
+        out = pattern.sub(replacement, out)
+    return out
+
+
 def log_to_mlflow(
     exp_num: int,
     proposal: dict,
@@ -844,7 +917,7 @@ def log_to_mlflow(
                 "outcome": outcome,
             }
         )
-        mlflow.log_text(proposal.get("rationale", ""), "rationale.txt")
+        mlflow.log_text(_redact_secrets(proposal.get("rationale", "")), "rationale.txt")
 
         auc_after = pipeline_result["auc"]
         mlflow.log_metric("auc_roc_before", auc_before)
@@ -859,12 +932,19 @@ def log_to_mlflow(
                 mlflow.set_tag("claude_model", usage["model"])
 
         # Log every attempted file, even reverted ones, for the audit trail.
+        # Redact obvious secrets first — the LLM has the project context but
+        # may regenerate sample values that look like keys, or echo error
+        # text containing tokens. MLflow UI is public per portfolio scope.
         if proposal.get("params_yaml"):
-            mlflow.log_text(proposal["params_yaml"], "attempted/params.yaml")
+            mlflow.log_text(
+                _redact_secrets(proposal["params_yaml"]), "attempted/params.yaml"
+            )
         if proposal.get("train_py"):
-            mlflow.log_text(proposal["train_py"], "attempted/train.py")
+            mlflow.log_text(_redact_secrets(proposal["train_py"]), "attempted/train.py")
         if proposal.get("preprocess_py"):
-            mlflow.log_text(proposal["preprocess_py"], "attempted/preprocess.py")
+            mlflow.log_text(
+                _redact_secrets(proposal["preprocess_py"]), "attempted/preprocess.py"
+            )
 
         if pipeline_result["success"]:
             run_id_file = PROJECT_ROOT / "models" / "run_id.txt"
@@ -872,7 +952,7 @@ def log_to_mlflow(
                 mlflow.set_tag("linked_train_run_id", run_id_file.read_text().strip())
 
         if error_msg:
-            mlflow.set_tag("error", error_msg[:500])
+            mlflow.set_tag("error", _redact_secrets(error_msg)[:500])
 
         for metric_name, val in pipeline_result.get("metrics", {}).items():
             if isinstance(val, (int, float)) and not isinstance(val, bool):

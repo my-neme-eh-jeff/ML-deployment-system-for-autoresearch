@@ -20,7 +20,11 @@ MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5000")
 MODEL_NAME = os.getenv("MODEL_NAME", "classifier")
 MODEL_URI = f"models:/{MODEL_NAME}@champion"
 
-mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+# Note: mlflow.set_tracking_uri() is intentionally NOT called at module
+# import time. Doing so pollutes mlflow's process-global tracking URI for
+# any other code that imports this module (e.g. tests that pre-set
+# MLFLOW_TRACKING_URI to a sqlite path). The loader below sets it just
+# before the first load attempt.
 
 model = None
 model_version: str | None = None
@@ -46,6 +50,9 @@ def _load_model_in_background():
     catches up automatically.
     """
     global model, model_version
+    # Set the tracking URI here (not at module import) so importing this
+    # module doesn't clobber other test/runtime mlflow configuration.
+    mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
     attempt = 0
     while True:
         try:
