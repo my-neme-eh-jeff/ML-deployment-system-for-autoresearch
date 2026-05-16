@@ -1145,7 +1145,17 @@ def run_loop(
         pipeline_result = run_pipeline(timeout=KFP_TIMEOUT_SECONDS)
 
         if not pipeline_result["success"]:
-            print(f"  PIPELINE FAILED: {pipeline_result['stderr'][:300]}")
+            # "Claude's experiment didn't train" — NOT "infrastructure broke".
+            # This branch fires on KFP run-state=FAILED, which in practice
+            # means the proposed config (params/train.py mutation) didn't
+            # complete a clean preprocess→train→evaluate cycle. Could be a
+            # schema mismatch, an unknown column, an incompatible
+            # hyperparameter combo. Same handling either way: revert the
+            # iter's local edits, log the row, move on.
+            print(
+                f"  ✗ EXPERIMENT FAILED: Claude's proposed change didn't "
+                f"train cleanly. {pipeline_result['stderr'][:280]}"
+            )
             revert_files(originals)
             log_to_mlflow(
                 i,
