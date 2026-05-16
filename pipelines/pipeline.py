@@ -136,9 +136,12 @@ def classifier_pipeline(
     )
     # Memory budgets sized for the 200K × 339 IEEE-CIS subsample. Pandas DF
     # ~800 MB, peaks higher during sklearn fit. 1 GiB OOM'd silently at the OS
-    # level (exit 137) on the previous run.
-    preprocess_task.set_cpu_request("300m").set_memory_request("1Gi")
-    preprocess_task.set_cpu_limit("1").set_memory_limit("3Gi")
+    # level (exit 137) on the previous run. The autoresearch loop expands the
+    # numeric_features list iteratively (3 → 36 → 75+ on a long run), so the
+    # ceiling needs headroom for the final iters too. Bumped 2026-05-16 after
+    # observing iter-5 timeouts when training on 45-feature configs.
+    preprocess_task.set_cpu_request("500m").set_memory_request("2Gi")
+    preprocess_task.set_cpu_limit("2").set_memory_limit("6Gi")
 
     # `kfp_run_id` here is whatever string the submitter passes in via
     # `arguments={..., "kfp_run_id": "<uuid>"}`. KFP v2 does NOT substitute
@@ -154,8 +157,10 @@ def classifier_pipeline(
         mlflow_tracking_uri=mlflow_tracking_uri,
         kfp_run_id=kfp_run_id,
     )
-    train_task.set_cpu_request("500m").set_memory_request("1Gi")
-    train_task.set_cpu_limit("2").set_memory_limit("4Gi")
+    # HistGB(n_estimators=500, 45 features) holds ~3-4Gi of internal binning
+    # state during fit. 4Gi limit OOM-killed silently on the previous run.
+    train_task.set_cpu_request("1").set_memory_request("2Gi")
+    train_task.set_cpu_limit("4").set_memory_limit("8Gi")
 
     evaluate_task = evaluate(
         params_yaml=params_yaml,
@@ -164,8 +169,8 @@ def classifier_pipeline(
         run_id_artifact=train_task.outputs["run_id_artifact"],
         mlflow_tracking_uri=mlflow_tracking_uri,
     )
-    evaluate_task.set_cpu_request("300m").set_memory_request("1Gi")
-    evaluate_task.set_cpu_limit("1").set_memory_limit("3Gi")
+    evaluate_task.set_cpu_request("500m").set_memory_request("2Gi")
+    evaluate_task.set_cpu_limit("2").set_memory_limit("6Gi")
 
 
 if __name__ == "__main__":

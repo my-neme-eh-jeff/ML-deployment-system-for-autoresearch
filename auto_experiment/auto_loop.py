@@ -383,6 +383,17 @@ def revert_files(originals: dict):
 
 
 def ruff_fix(proposal: dict):
+    """Auto-fix lint + format on Claude-mutated files BEFORE the PR opens.
+
+    `lint-and-test` is a required status check on main. A single F841
+    (unused variable Claude introduced) or a long line is enough to block
+    the auto-merge and stall the loop. Without `--unsafe-fixes`, ruff
+    leaves "fixable but might change behavior" lints alone — which is
+    typically what bites: unused imports it could remove but conservatively
+    doesn't. We turn that on because the alternative (PR rejected → loop
+    times out PR wait → reverts the iter) is strictly worse than ruff
+    being aggressive on autoresearch-generated code.
+    """
     py_files = []
     if proposal.get("train_py"):
         py_files.append("src/train.py")
@@ -391,7 +402,7 @@ def ruff_fix(proposal: dict):
     if not py_files:
         return
     subprocess.run(
-        ["uv", "run", "ruff", "check", "--fix"] + py_files,
+        ["uv", "run", "ruff", "check", "--fix", "--unsafe-fixes"] + py_files,
         cwd=PROJECT_ROOT,
         capture_output=True,
     )
