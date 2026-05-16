@@ -8,11 +8,13 @@ metadata:
 spec:
   backoffLimit: 0
   ttlSecondsAfterFinished: 3600
-  # Hard cap on wall-clock time so a hung KFP submit or stuck Anthropic call
-  # can't keep the Job alive (and racking up token spend) past the loop's
-  # in-code --hours budget. 7200s = 2h matches the default --hours flag in
-  # `make autoresearch-run`. Adjust both together if you bump the budget.
-  activeDeadlineSeconds: 7200
+  # 24h sanity backstop. The real per-run cap is `--hours` on the loop CLI,
+  # which is set per-invocation via `AUTORESEARCH_HOURS` (Makefile default 2h,
+  # override at submit time). A bigger ceiling here means a run with --hours=6
+  # is not killed mid-iter because the Job spec was stricter than the loop's
+  # own budget. Cost-control is the loop's job (it has --max-cost-usd); this
+  # is purely a "don't keep this pod alive forever" backstop.
+  activeDeadlineSeconds: 86400
   template:
     metadata:
       labels:

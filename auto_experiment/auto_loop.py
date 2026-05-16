@@ -34,9 +34,18 @@ HISTORY_PATH = PROJECT_ROOT / "auto_experiment" / "history.tsv"
 PROGRAM_MD_PATH = PROJECT_ROOT / "auto_experiment" / "program.md"
 METRICS_PATH = PROJECT_ROOT / "metrics.json"
 
-# Per-iteration KFP run ceiling. Heavy proposals on IEEE-CIS (200K × 339) can
-# push past 15 min on bigger HGB / boosting trees; 30 min keeps them in scope.
-KFP_TIMEOUT_SECONDS = 1800
+# Per-iteration KFP wait ceiling. Effectively async — the autoresearch loop
+# polls KFP until the run reaches a terminal state (Succeeded / Failed /
+# Cancelled). 24 h is a sanity backstop in case KFP itself wedges; the real
+# top-level cap is the `--hours` flag on `run_loop`, which also accounts for
+# Claude latency + commit/merge time across all iters.
+#
+# Past tighter values (1800s) caused the loop to record a spurious "EXPERIMENT
+# FAILED: KFP wait: Run timeout" when training was simply heavy — a 45-feature
+# HistGB(n_estimators=500) on the IEEE-CIS subsample legitimately takes
+# 20-30 min in this cluster. The KFP run kept training in the background while
+# the loop moved on, polluting the registry with un-tracked versions.
+KFP_TIMEOUT_SECONDS = 86400
 
 
 # ── Startup checks ──────────────────────────────────────────────────────────
