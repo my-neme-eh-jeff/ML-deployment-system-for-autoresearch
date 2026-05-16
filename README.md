@@ -25,9 +25,14 @@ A system that improves an ML model on its own.
 
 ---
 
+
 ## 🎬 Demo video
 
-*Coming soon!*
+<img width="1484" height="1399" alt="Screenshot 2026-05-16 at 3 56 19 PM" src="https://github.com/user-attachments/assets/802f1326-51ec-4783-958e-e31d1a6ef584" />
+
+<img width="1484" height="1399" alt="Screenshot 2026-05-16 at 3 57 53 PM" src="https://github.com/user-attachments/assets/c5769eb6-fa4f-4a04-9cbc-deb3c1f6a4bc" />
+
+<img width="1484" height="1399" alt="Screenshot 2026-05-16 at 3 58 21 PM" src="https://github.com/user-attachments/assets/1ecdbc6a-419b-4bca-b814-5bf1c7c155eb" />
 
 ---
 
