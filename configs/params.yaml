@@ -2,157 +2,26 @@ dataset:
   csv_path: data/ieee_cis.parquet
   target_column: isFraud
   drop_columns: [TransactionID, TransactionDT]
-  numeric_features:
-    - TransactionAmt
-    - card1
-    - card2
-    - card3
-    - card5
-    - addr1
-    - addr2
-    - dist1
-    - dist2
-    - C1
-    - C2
-    - C3
-    - C4
-    - C5
-    - C6
-    - C7
-    - C8
-    - C9
-    - C10
-    - C11
-    - C12
-    - C13
-    - C14
-    - D1
-    - D2
-    - D3
-    - D4
-    - D5
-    - D6
-    - D7
-    - D8
-    - D9
-    - D10
-    - D11
-    - D12
-    - D13
-    - D14
-    - D15
-    - V1
-    - V2
-    - V3
-    - V4
-    - V5
-    - V6
-    - V7
-    - V8
-    - V9
-    - V10
-    - V11
-    - V12
-    - V13
-    - V14
-    - V15
-    - V16
-    - V17
-    - V18
-    - V19
-    - V20
-    - V36
-    - V37
-    - V38
-    - V39
-    - V40
-    - V44
-    - V45
-    - V46
-    - V47
-    - V48
-    - V49
-    - V50
-    - V51
-    - V52
-    - V53
-    - V54
-    - V55
-    - V56
-    - V57
-    - V58
-    - V59
-    - V60
-    - V61
-    - V62
-    - V63
-    - V64
-    - V70
-    - V71
-    - V72
-    - V73
-    - V74
-    - V75
-    - V76
-    - V77
-    - V78
-    - V79
-    - V80
-    - V81
-    - V82
-    - V83
-    - V87
-    - V88
-    - V89
-    - V90
-    - V91
-    - V92
-    - V93
-    - V94
-    - V95
-    - V96
-    - V97
-    - V98
-    - V99
-    - V100
-  categorical_features:
-    - ProductCD
-    - card4
-    - card6
-    - P_emaildomain
-    - R_emaildomain
-    - DeviceType
-    - DeviceInfo
-    - M1
-    - M2
-    - M3
-    - M4
-    - M5
-    - M6
-    - M7
-    - M8
-    - M9
+  numeric_features: [TransactionAmt]
+  categorical_features: [ProductCD]
 
 preprocess:
   test_size: 0.2
   random_state: 42
 
 train:
-  model_type: HistGradientBoostingClassifier
+  model_type: DecisionTreeClassifier
   random_state: 42
   max_depth: null
-  max_features: sqrt
-  n_estimators: 1000
-  min_samples_leaf: 10
-  class_weight: balanced
+  max_features: null
+  n_estimators: 100
+  min_samples_split: 2
+  min_samples_leaf: 1
+  class_weight: null
   bootstrap: true
-  learning_rate: 0.05
+  learning_rate: 0.1
   subsample: 1.0
   use_log_transform: false
-  l2_regularization: 0.1
-  early_stopping: true
-  validation_fraction: 0.1
-  n_iter_no_change: 20
 
 # Read only by auto_experiment/auto_loop.py. The evaluate stage's promotion
 # metric (auc_roc) and auto_promote behaviour are wired in src/evaluate.py;
