@@ -63,6 +63,8 @@ jobs:
         uses: dorny/paths-filter@v3
         id: changes
         with:
+          # Each filter mirrors the COPY layer of the corresponding Dockerfile.
+          # When you change a Dockerfile's COPY list, update its filter here.
           filters: |
             training:
               - 'src/**'
@@ -71,17 +73,26 @@ jobs:
               - 'uv.lock'
               - 'dvc.yaml'
               - 'data/**'
+            # Dockerfile (inference-api) only copies api.py + features.py + __init__.py
+            # — NOT src/preprocess.py or src/train.py. Don't over-trigger on src/**.
             api:
               - 'Dockerfile'
-              - 'src/**'
+              - 'src/__init__.py'
+              - 'src/api.py'
+              - 'src/features.py'
               - 'pyproject.toml'
               - 'uv.lock'
+            # Dockerfile.kfp bakes src/ + configs/ + auto_experiment/.
             kfp:
               - 'Dockerfile.kfp'
               - 'src/**'
               - 'configs/**'
+              - 'auto_experiment/**'
               - 'pyproject.toml'
               - 'uv.lock'
+            # Dockerfile.autoresearch copies auto_experiment, src, configs,
+            # pipelines, .dvc, dvc.yaml, dvc.lock, .dvcignore, data pointers,
+            # and scripts/run-autoresearch.sh.
             autoresearch:
               - 'Dockerfile.autoresearch'
               - 'auto_experiment/**'
@@ -89,8 +100,7 @@ jobs:
               - 'configs/**'
               - 'pipelines/**'
               - '.dvc/**'
-              - 'pyproject.toml'
-              - 'uv.lock'
+              - '.dvcignore'
               - 'dvc.yaml'
               - 'dvc.lock'
               - 'data/**'

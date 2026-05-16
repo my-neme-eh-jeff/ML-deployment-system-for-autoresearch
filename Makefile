@@ -259,27 +259,44 @@ autoresearch-run:
 # Run BEFORE a new dataset / new bad-baseline experiment so trajectory plots
 # and `classifier` versions start from v1 again. NOT idempotent — destructive.
 #   1. Empty auto_experiment/history.tsv to header-only (Claude's memory wipes)
-#   2. Delete MLflow `classifier` registered model (drops every version + alias)
-#   3. dvc repro --force against cluster MLflow → registers fresh v1 from
-#      whatever configs/params.yaml currently says
-#   4. Force-set classifier@champion to the new v1
-#   5. Restart inference-api pods so they load v1
+#   2. Soft-delete every `classifier` model version + its run, then soft-delete
+#      the registered model itself, then `mlflow gc` inside the mlflow pod to
+#      hard-purge. Without gc, MLflow's soft-delete preserves version
+#      numbering — a fresh registration lands at v2, not v1 (real incident,
+#      2026-05-15: the hardcoded `@champion → v1` step below ended up
+#      aliasing a zombie run with no metrics).
+#   3. dvc repro --force against cluster MLflow → registers fresh v1
+#   4. Resolve the just-registered version dynamically and alias it to
+#      @champion (safety net if gc somehow didn't clean — never hardcode "1")
+#   5. Restart inference-api pods so they load the new @champion
 # Prerequisite: `make mlflow-kill && make mlflow` port-forward in another terminal.
 reset-for-fresh-run:
 	@echo "── 1/5: emptying history.tsv ──"
 	@printf "timestamp\texp_num\texperiment_name\tchange_type\tauc_before\tauc_after\tdelta\toutcome\tinput_tokens\toutput_tokens\tcost_usd\trationale\n" > auto_experiment/history.tsv
-	@echo "── 2/5: deleting MLflow classifier registered model ──"
-	@MLFLOW_TRACKING_URI=http://localhost:5000 uv run python -c "import mlflow; c = mlflow.MlflowClient(); \
-		[c.delete_registered_model('classifier')] if any(m.name == 'classifier' for m in c.search_registered_models()) else print('  (classifier not registered, skipping)')"
-	@echo "── 3/5: dvc repro --force to register fresh v1 from current params.yaml ──"
+	@echo "── 2/5: soft-delete classifier + runs, then mlflow gc to hard-purge ──"
+	@MLFLOW_TRACKING_URI=http://localhost:5000 uv run python -c "import mlflow; \
+c = mlflow.MlflowClient(); \
+exists = any(m.name == 'classifier' for m in c.search_registered_models()); \
+[ (c.delete_model_version('classifier', v.version), c.delete_run(v.run_id)) for v in c.search_model_versions(\"name='classifier'\") ] if exists else None; \
+c.delete_registered_model('classifier') if exists else print('  (classifier not registered, skipping)')"
+	@pod=$$(kubectl get pod -n mlflow -l app=mlflow -o jsonpath='{.items[0].metadata.name}' 2>/dev/null); \
+	if [ -n "$$pod" ]; then \
+		kubectl exec -n mlflow "$$pod" -c mlflow -- sh -c 'MLFLOW_TRACKING_URI=http://127.0.0.1:5000 mlflow gc --backend-store-uri "postgresql://mlflow_user:$$CLOUDSQL_PASSWORD@127.0.0.1:5432/mlflow_db" 2>&1 | sed "s|mlflow_user:[^@]*@|mlflow_user:***@|g"' | tail -5; \
+	else \
+		echo "  (mlflow pod not running — skipping gc; version numbering may drift but step 4 still aliases the correct version)"; \
+	fi
+	@echo "── 3/5: dvc repro --force to register fresh classifier from current params.yaml ──"
 	@rm -rf data/processed/test.csv data/processed/train.csv models metrics.json
 	@MLFLOW_TRACKING_URI=http://localhost:5000 uv run dvc repro --force 2>&1 | tail -10
-	@echo "── 4/5: force-set classifier@champion to v1 ──"
+	@echo "── 4/5: alias the just-registered version to @champion ──"
 	@MLFLOW_TRACKING_URI=http://localhost:5000 uv run python -c "import mlflow; \
-		c = mlflow.MlflowClient(); c.set_registered_model_alias('classifier', 'champion', '1'); \
-		v = c.get_model_version_by_alias('classifier', 'champion'); \
-		print(f'  @champion → v{v.version}')"
-	@echo "── 5/5: restart inference-api pods to pick up v1 ──"
+c = mlflow.MlflowClient(); \
+versions = c.search_model_versions(\"name='classifier'\"); \
+latest = max(versions, key=lambda v: int(v.version)); \
+c.set_registered_model_alias('classifier', 'champion', latest.version); \
+run = c.get_run(latest.run_id); \
+print(f'  @champion → v{latest.version}  auc_roc={run.data.metrics.get(\"auc_roc\")}')"
+	@echo "── 5/5: restart inference-api pods to pick up the new @champion ──"
 	@kubectl rollout restart deployment/inference-api -n inference 2>&1 | tail -1
 	@echo
 	@echo "Reset complete. Run 'make autoresearch-run AUTORESEARCH_N=5' when ready."
