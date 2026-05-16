@@ -1,3 +1,5 @@
 timestamp	exp_num	experiment_name	change_type	auc_before	auc_after	delta	outcome	input_tokens	output_tokens	cost_usd	rationale
 2026-05-16T07:24	1	random_forest_expanded_features	params_only	0.0000	0.9323	+0.9323	improved	4953	812	0.0270	The current model uses only 1 numeric feature (TransactionAmt) and 1 categorical feature (ProductCD) with a DecisionTree
 2026-05-16T07:30	2	histgb_native_missing_500iter	params_only	0.9323	0.9356	+0.0033	improved	5295	825	0.0283	Switching to HistGradientBoostingClassifier should improve AUC-ROC because it natively handles missing values (no imputa
+2026-05-16T10:34	1	add_vesta_v_features	params_only	0.0000	0.0000	+0.0000	failed	5420	2521	0.0541	HistGradientBoostingClassifier is already showing strong performance at 0.9356. Adding more V-series features (Vesta's e
+2026-05-16T10:39	2	add_v_and_m_features	params_only	0.0000	0.9376	+0.9376	improved	5510	1322	0.0364	The V-series features (Vesta's engineered features) are highly informative for fraud detection in the IEEE-CIS dataset. 
