@@ -142,8 +142,8 @@ train:
   random_state: 42
   max_depth: null
   max_features: sqrt
-  n_estimators: 500
-  min_samples_leaf: 20
+  n_estimators: 1000
+  min_samples_leaf: 10
   class_weight: balanced
   bootstrap: true
   learning_rate: 0.05
