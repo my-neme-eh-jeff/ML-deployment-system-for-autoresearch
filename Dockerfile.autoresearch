@@ -7,8 +7,12 @@ RUN apt-get update && \
 
 # Non-root user — uid 10001 matches jobs/autoresearch-job.yaml securityContext.
 # Done before WORKDIR/COPYs so chown is implicit on each layer.
+# /app itself must also be chown'd: `run-autoresearch.sh` does `git init` in
+# /app at startup (to give DVC a project-root anchor), which writes a `.git`
+# dir. Without ownership of /app, uid 10001 hits `Permission denied`.
 RUN useradd --create-home --uid 10001 app
 WORKDIR /app
+RUN chown app:app /app
 
 RUN pip install --no-cache-dir uv
 

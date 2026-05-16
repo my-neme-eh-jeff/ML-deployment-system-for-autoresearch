@@ -7,9 +7,12 @@ RUN apt-get update && \
 
 # Non-root user — KFP pods scheduled with this image run as uid 10001 unless
 # the cluster admission controller overrides. Done before WORKDIR so chown
-# is implicit on each subsequent COPY.
+# is implicit on each subsequent COPY. /app itself is also chown'd because
+# the KFP launcher writes to the workspace at runtime (downloaded inputs,
+# emitted outputs, sometimes `pip install`s extra deps into the venv).
 RUN useradd --create-home --uid 10001 app
 WORKDIR /app
+RUN chown app:app /app
 
 RUN pip install --no-cache-dir uv
 
