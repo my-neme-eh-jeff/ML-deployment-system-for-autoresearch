@@ -42,7 +42,7 @@ stages:
       - configs/params.yaml:
           - dataset
           - train
-          - evaluate
+          - auto_experiment
     metrics:
       - metrics.json:
           cache: false

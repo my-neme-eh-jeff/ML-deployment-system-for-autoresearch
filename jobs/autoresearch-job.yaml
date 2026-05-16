@@ -20,10 +20,23 @@ spec:
     spec:
       serviceAccountName: autoresearch-sa
       restartPolicy: Never
+      # Pod Security `restricted` baseline. uid 10001 matches the `app` user
+      # baked into Dockerfile.autoresearch — bump both together.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: loop
           image: ghcr.io/my-neme-eh-jeff/autoresearch-loop:latest
           imagePullPolicy: Always
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           # `make autoresearch-run` rewrites the next line via sed.
           # args: [REWRITE_ME]
           env:

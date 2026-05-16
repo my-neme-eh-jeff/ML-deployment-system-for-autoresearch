@@ -23,12 +23,9 @@ train:
   subsample: 1.0
   use_log_transform: false
 
-evaluate:
-  primary_metric: auc_roc
-  auto_promote: true
-
-# Read only by auto_experiment/auto_loop.py. Editing this never invalidates
-# DVC stages because it's not declared as a `params:` dependency in dvc.yaml.
+# Read only by auto_experiment/auto_loop.py. The evaluate stage's promotion
+# metric (auc_roc) and auto_promote behaviour are wired in src/evaluate.py;
+# previously this file shipped duplicate keys that no code path read.
 auto_experiment:
   baseline_auc: 0.0
   # 0.003 ≈ one standard error of AUC on a 40K-row test set; below this is noise.

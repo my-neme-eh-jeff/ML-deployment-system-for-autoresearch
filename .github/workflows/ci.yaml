@@ -20,6 +20,11 @@ jobs:
       - name: Set up Python
         run: uv python install 3.12
 
+      # Catches pyproject.toml ↔ uv.lock drift in 5s instead of as an
+      # `uv sync --frozen` failure 8 minutes later inside the Docker build.
+      - name: Verify uv.lock matches pyproject.toml
+        run: uv lock --check
+
       - name: Install dependencies
         run: uv sync --dev
 

@@ -2,6 +2,7 @@
 
 import os
 import pickle
+import subprocess
 from functools import partial
 from pathlib import Path
 
@@ -99,10 +100,10 @@ def build_pipeline(dataset: dict, params: dict) -> Pipeline:
     """Build the full sklearn Pipeline.
 
     Three steps, in order:
-      1. feature_eng — applies apply_feature_engineering(X, params). Derives
-         columns like charges_per_month from raw input. This step is part of
-         the saved pipeline so train, evaluate, AND inference apply the same
-         transformation — no drift possible.
+      1. feature_eng — applies apply_feature_engineering(X, params). This step
+         is part of the saved pipeline so train, evaluate, AND inference apply
+         the same transformation — no drift possible. Schema-agnostic by
+         default; autoresearch may inject dataset-specific FE via params flags.
       2. preprocessor — ColumnTransformer with SimpleImputer(median) +
          StandardScaler on numeric, OneHotEncoder on categorical. The imputer
          fits ON TRAIN ONLY (via Pipeline contract) so test/inference rows
@@ -208,6 +209,20 @@ def train(
         kfp_run_id = os.environ.get("KFP_RUN_ID")
         if kfp_run_id:
             mlflow.set_tag("kfp_run_id", kfp_run_id)
+        # Tag the run with the commit it was trained from. Lets ops trace any
+        # serving complaint back to a specific code SHA (with kfp_run_id +
+        # @champion alias as the other two legs of traceability). Best-effort
+        # — silently skipped outside a git repo (ephemeral CI MLflow, etc.).
+        git_sha = os.environ.get("GIT_COMMIT_SHA")
+        if not git_sha:
+            try:
+                git_sha = subprocess.check_output(
+                    ["git", "rev-parse", "HEAD"], stderr=subprocess.DEVNULL, text=True
+                ).strip()
+            except (subprocess.SubprocessError, FileNotFoundError):
+                git_sha = None
+        if git_sha:
+            mlflow.set_tag("git_commit", git_sha[:12])
         mlflow.log_params({k: v for k, v in params.items() if v is not None})
         mlflow.log_param("n_features", X.shape[1])
         mlflow.log_param("n_train_samples", X.shape[0])

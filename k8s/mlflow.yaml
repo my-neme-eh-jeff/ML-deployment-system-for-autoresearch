@@ -23,6 +23,15 @@ spec:
         app: mlflow
     spec:
       serviceAccountName: mlflow-sa
+      # Pod-level defaults. `runAsNonRoot` is NOT set at pod level because the
+      # upstream `ghcr.io/mlflow/mlflow` image runs as root and forcing
+      # non-root here would break startup. Each container sets its own
+      # `runAsNonRoot` instead — cloud-sql-proxy enforces it (nobody/65534);
+      # the MLflow main container is documented as a known gap pending an
+      # image swap to a non-root MLflow build.
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: cloud-sql-proxy
           image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.11.4
@@ -32,6 +41,9 @@ spec:
           securityContext:
             runAsNonRoot: true
             runAsUser: 65534
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           resources:
             requests:
               cpu: 50m
@@ -47,6 +59,14 @@ spec:
         # Job with cloud-sql-proxy sidecar), then update this digest.
         - name: mlflow
           image: ghcr.io/mlflow/mlflow@sha256:c4cfc7eb77caf73c84b084d93456bc904500884a93b5348934ae42b351cc1263
+          # Documented gap: upstream MLflow image runs as root. Defence-
+          # in-depth via dropping all caps + no privilege escalation still
+          # applies; full non-root pending a swap to a non-root MLflow image
+          # (or a custom build that does `USER mlflow` after `pip install`).
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           command: ["mlflow", "server"]
           args:
             - --backend-store-uri=postgresql://mlflow_user:$(CLOUDSQL_PASSWORD)@127.0.0.1:5432/mlflow_db

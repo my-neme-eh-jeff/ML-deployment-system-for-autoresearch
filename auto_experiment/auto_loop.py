@@ -247,13 +247,35 @@ Propose ONE specific change to improve AUC-ROC. Choose something not yet tried, 
             response = client.messages.create(
                 model=model,
                 max_tokens=8192,
-                system=system_prompt,
+                # program.md is ~3–4K stable tokens across every iter of a
+                # session. Marking it `cache_control: ephemeral` lets
+                # Anthropic charge cache-read rates (≈0.1×) from iter 2
+                # onward — ~75% input-cost reduction over a 20-iter run.
+                # The user prompt is NOT cached: experiment history,
+                # current AUC, params.yaml, train.py all mutate each iter.
+                system=[
+                    {
+                        "type": "text",
+                        "text": system_prompt,
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ],
                 tools=[PROPOSAL_TOOL],
                 tool_choice={"type": "tool", "name": "propose_experiment"},
                 messages=[{"role": "user", "content": user_prompt}],
             )
             total_in += getattr(response.usage, "input_tokens", 0) or 0
             total_out += getattr(response.usage, "output_tokens", 0) or 0
+            # Cache stats — not billed at standard rate. Log so we can verify
+            # cache-hit behavior on the first real run.
+            usage = response.usage
+            cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
+            cache_write = getattr(usage, "cache_creation_input_tokens", 0) or 0
+            if cache_read or cache_write:
+                print(
+                    f"[claude] cache_read={cache_read} cache_write={cache_write} "
+                    f"billed_in={total_in} out={total_out}"
+                )
 
             tool_use = next(
                 (b for b in response.content if getattr(b, "type", None) == "tool_use"),
@@ -1005,6 +1027,7 @@ def run_loop(
     dry_run: bool,
     claude_model: str,
     min_improvement: float,
+    max_cost_usd: float | None = None,
 ):
     check_prerequisites()
 
@@ -1046,6 +1069,16 @@ def run_loop(
         elapsed = time.time() - start_time
         if elapsed > hours * 3600:
             print(f"\nTime budget ({hours}h) exhausted after {i - 1} experiments.")
+            break
+        # Cost circuit breaker: stop before the NEXT iter if total has already
+        # crossed the cap. Per-iter cost is added below; this check runs at
+        # the top of each loop so the cap is honoured even if iter N pushed
+        # us over (we don't try to half-run an iteration).
+        if max_cost_usd is not None and total_cost_usd >= max_cost_usd:
+            print(
+                f"\n💰 Cost cap ${max_cost_usd:.2f} reached after iter {i - 1} "
+                f"(total ≈ ${total_cost_usd:.4f}). Stopping."
+            )
             break
 
         print(f"\n[{i}/{n_experiments}] Collecting state...")
@@ -1274,6 +1307,16 @@ if __name__ == "__main__":
         default=0.001,
         help="Minimum AUC-ROC delta to accept a change",
     )
+    parser.add_argument(
+        "--max-cost-usd",
+        type=float,
+        default=None,
+        help=(
+            "Stop the loop once the cumulative Anthropic cost crosses this "
+            "USD value. Default: no cap. Recommended ~$3 for a 20-iter run "
+            "with prompt caching enabled."
+        ),
+    )
     args = parser.parse_args()
 
     run_loop(
@@ -1282,4 +1325,5 @@ if __name__ == "__main__":
         dry_run=args.dry_run,
         claude_model=args.model,
         min_improvement=args.min_improvement,
+        max_cost_usd=args.max_cost_usd,
     )

@@ -1,11 +1,15 @@
 FROM python:3.12-slim
 
-WORKDIR /app
-
 # git is needed by DVC for project-root detection inside KFP pods.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends git ca-certificates && \
     rm -rf /var/lib/apt/lists/*
+
+# Non-root user — KFP pods scheduled with this image run as uid 10001 unless
+# the cluster admission controller overrides. Done before WORKDIR so chown
+# is implicit on each subsequent COPY.
+RUN useradd --create-home --uid 10001 app
+WORKDIR /app
 
 RUN pip install --no-cache-dir uv
 
@@ -14,7 +18,7 @@ RUN pip install --no-cache-dir uv
 # sklearn / mlflow / pandas versions. Previously this image hardcoded pip
 # versions that could drift from uv.lock, breaking artifact compatibility
 # between the training pod and the inference pod.
-COPY pyproject.toml uv.lock ./
+COPY --chown=app:app pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev
 # KFP v2's launcher shells out to `python -m pip install kfp==<launcher_version>`
 # at component start, even when kfp is already in the venv. `uv sync` builds a
@@ -22,13 +26,15 @@ RUN uv sync --frozen --no-dev
 # "No module named pip" and the whole pipeline reports FAILED — which is what
 # 5/5 iters hit in the last test run. Seed pip into the venv to satisfy the
 # launcher's install probe.
-RUN /app/.venv/bin/python -m ensurepip --upgrade
+RUN /app/.venv/bin/python -m ensurepip --upgrade && \
+    chown -R app:app /app/.venv
 
 # Bake the project source so the KFP @component wrappers can shell out to
 # src/preprocess.py / src/train.py / src/evaluate.py. The /app layout matches
 # what the source code expects (PROJECT_ROOT = /app).
-COPY src/ src/
-COPY configs/ configs/
-COPY auto_experiment/ auto_experiment/
+COPY --chown=app:app src/ src/
+COPY --chown=app:app configs/ configs/
+COPY --chown=app:app auto_experiment/ auto_experiment/
 
+USER app
 ENV PATH="/app/.venv/bin:${PATH}"

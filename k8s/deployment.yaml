@@ -25,11 +25,26 @@ spec:
         mlops/classifier-run-id: "69d309ac56ad4b8790e2f1a5f88028f1"
     spec:
       serviceAccountName: inference-api-sa
+      # Pod Security `restricted` baseline. uid 10001 matches the `app` user
+      # baked into Dockerfile; if you bump one, bump both. seccompProfile +
+      # capabilities.drop:[ALL] follow the same defaults the GKE Autopilot
+      # baseline expects.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: inference-api
           # CI rewrites this image SHA on every push to main.
           image: ghcr.io/my-neme-eh-jeff/inference-api:75d80f2f72fab9f714f08844f5b1568147c8cb67
           imagePullPolicy: Always
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           ports:
             - containerPort: 8000
           env:

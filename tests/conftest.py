@@ -1,5 +1,19 @@
-"""Shared fixtures for tests."""
+"""Shared fixtures for tests.
 
+Exposes two dataset shapes for the same preprocess/train/evaluate code path:
+
+* Telco-Churn (legacy): wide schema with mixed numeric + categorical columns,
+  exercises target mapping, drop_columns, and `coerce_to_numeric`.
+* IEEE-CIS Fraud (production): the schema currently in configs/params.yaml.
+  Heavy class imbalance, mostly numeric features.
+
+The schema-agnostic invariants (split files exist, target encoded to {0,1},
+stats.json written, drop_columns absent from output) are asserted against
+BOTH via @pytest.mark.parametrize("dataset", ["telco", "ieee_cis"]).
+Telco-specific invariants stay in tests/test_preprocess.py.
+"""
+
+import numpy as np
 import pandas as pd
 import pytest
 import yaml
@@ -52,9 +66,7 @@ TELCO_PARAMS = {
         "learning_rate": 0.1,
         "subsample": 1.0,
         "use_log_transform": False,
-        "add_charges_per_month": False,
     },
-    "evaluate": {"primary_metric": "auc_roc", "auto_promote": True},
 }
 
 
@@ -131,3 +143,102 @@ def sample_processed_data(tmp_path, sample_raw_data, telco_params):
         params_path=str(telco_params),
     )
     return tmp_path / "processed"
+
+
+# ── IEEE-CIS Fraud schema (matches configs/params.yaml) ──────────────────────
+
+IEEE_CIS_PARAMS = {
+    "dataset": {
+        "csv_path": "data/ieee_cis.parquet",
+        "target_column": "isFraud",
+        "drop_columns": ["TransactionID", "TransactionDT"],
+        "numeric_features": ["TransactionAmt"],
+        "categorical_features": ["ProductCD"],
+    },
+    "preprocess": {"test_size": 0.2, "random_state": 42},
+    "train": {
+        "model_type": "DecisionTreeClassifier",
+        "random_state": 42,
+        "max_depth": None,
+        "max_features": None,
+    },
+}
+
+
+@pytest.fixture
+def ieee_cis_params(tmp_path):
+    p = tmp_path / "params.yaml"
+    p.write_text(yaml.dump(IEEE_CIS_PARAMS))
+    return p
+
+
+@pytest.fixture
+def sample_ieee_cis_raw_data(tmp_path):
+    """Synthetic IEEE-CIS-shaped CSV. 80 rows, ~12% positive rate to roughly
+    mimic the real dataset's class imbalance without dragging the full 590K
+    Kaggle file into the test suite."""
+    rng = np.random.default_rng(42)
+    n = 80
+    df = pd.DataFrame(
+        {
+            "TransactionID": np.arange(1, n + 1),
+            "TransactionDT": rng.integers(86400, 86400 * 30, size=n),
+            "TransactionAmt": np.round(rng.exponential(scale=50.0, size=n), 2),
+            "ProductCD": rng.choice(["W", "C", "R", "H", "S"], size=n),
+            "isFraud": rng.choice([0, 1], size=n, p=[0.88, 0.12]),
+        }
+    )
+    path = tmp_path / "raw_ieee_cis.csv"
+    df.to_csv(path, index=False)
+    return path
+
+
+@pytest.fixture
+def sample_ieee_cis_processed_data(tmp_path, sample_ieee_cis_raw_data, ieee_cis_params):
+    """Run preprocessing with the IEEE-CIS schema and return the output directory."""
+    from src.preprocess import preprocess
+
+    out_dir = str(tmp_path / "processed_ieee_cis")
+    preprocess(
+        input_path=str(sample_ieee_cis_raw_data),
+        output_dir=out_dir,
+        params_path=str(ieee_cis_params),
+    )
+    return tmp_path / "processed_ieee_cis"
+
+
+# ── Parametrized fixture: same code, both schemas ───────────────────────────
+
+
+# `@pytest.fixture(params=...)` runs every test that takes `dataset_case` once
+# per case. Each parametrization yields a (raw_path, params_path,
+# processed_dir, target_col, dropped_cols) bundle so test bodies can assert
+# the schema-agnostic invariants without hardcoding column names.
+@pytest.fixture(params=["telco", "ieee_cis"])
+def dataset_case(request, tmp_path):
+    if request.param == "telco":
+        # Reconstruct the telco artefacts inside this fixture so the
+        # parametrization owns its own tmp_path subtree (avoids step-on with
+        # the standalone Telco-only fixtures elsewhere in the file).
+        raw_request = request.getfixturevalue("sample_raw_data")
+        params_request = request.getfixturevalue("telco_params")
+        processed = request.getfixturevalue("sample_processed_data")
+        return {
+            "name": "telco",
+            "raw_path": raw_request,
+            "params_path": params_request,
+            "processed_dir": processed,
+            "target_col": "Churn",
+            "dropped_cols": ["customerID"],
+        }
+    raw = request.getfixturevalue("sample_ieee_cis_raw_data")
+    params = request.getfixturevalue("ieee_cis_params")
+    processed = request.getfixturevalue("sample_ieee_cis_processed_data")
+    return {
+        "name": "ieee_cis",
+        "raw_path": raw,
+        "params_path": params,
+        "processed_dir": processed,
+        "target_col": "isFraud",
+        "dropped_cols": ["TransactionID", "TransactionDT"],
+    }
